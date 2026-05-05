@@ -1,0 +1,17 @@
+{
+  "expo": {
+    "name": "LocalSend",
+    "slug": "localsend-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "android": {
+      "package": "com.localsend.mobile"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.localsend.mobile"
+    },
+    "scheme": "localsend"
+  }
+}

@@ -1,0 +1,214 @@
+import { WebSocketServer, WebSocket } from 'ws'
+import * as http from 'http'
+import * as fs from 'fs'
+import * as path from 'path'
+import { EventEmitter } from 'events'
+import { v4 as uuidv4 } from 'uuid'
+
+export const WS_PORT = 53318
+
+export interface TransferMetadata {
+  id: string
+  filename: string
+  size: number
+  mime: string
+  senderIp: string
+  senderAlias: string
+}
+
+export interface TransferProgress {
+  id: string
+  bytesReceived: number
+  totalBytes: number
+  speedBps: number
+}
+
+type TransferState = 'pending' | 'accepted' | 'rejected' | 'receiving' | 'done' | 'error'
+
+interface ActiveTransfer {
+  meta: TransferMetadata
+  state: TransferState
+  writeStream: fs.WriteStream | null
+  bytesReceived: number
+  startTime: number
+  resolve: (accepted: boolean) => void
+}
+
+export class WsTransferServer extends EventEmitter {
+  private httpServer: http.Server
+  private wss: WebSocketServer
+  private downloadDir: string
+  private pendingDecisions = new Map<string, ActiveTransfer>()
+
+  constructor(downloadDir: string) {
+    super()
+    this.downloadDir = downloadDir
+    this.httpServer = http.createServer((req, res) => {
+      // Expo Go discovery: GET /info returns device metadata as JSON
+      if (req.method === 'GET' && req.url === '/info') {
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*'
+        })
+        res.end(JSON.stringify({
+          alias: this.alias,
+          deviceType: 'desktop',
+          port: WS_PORT
+        }))
+        return
+      }
+      res.writeHead(404)
+      res.end()
+    })
+    this.wss = new WebSocketServer({ server: this.httpServer })
+    this.wss.on('connection', (ws, req) => this.handleConnection(ws, req))
+  }
+
+  private alias = 'LocalSend Desktop'
+
+  setAlias(alias: string): void {
+    this.alias = alias
+  }
+
+  private handleConnection(ws: WebSocket, req: http.IncomingMessage): void {
+    const senderIp = req.socket.remoteAddress?.replace('::ffff:', '') ?? 'unknown'
+    let transfer: ActiveTransfer | null = null
+    let expectingBinary = false
+
+    ws.on('message', async (data, isBinary) => {
+      if (!isBinary) {
+        // JSON control message
+        try {
+          const msg = JSON.parse(data.toString())
+
+          if (msg.type === 'metadata') {
+            const id = uuidv4()
+            const meta: TransferMetadata = {
+              id,
+              filename: path.basename(msg.filename),
+              size: msg.size,
+              mime: msg.mime ?? 'application/octet-stream',
+              senderIp,
+              senderAlias: msg.senderAlias ?? senderIp
+            }
+
+            const accepted = await new Promise<boolean>((resolve) => {
+              transfer = {
+                meta,
+                state: 'pending',
+                writeStream: null,
+                bytesReceived: 0,
+                startTime: 0,
+                resolve
+              }
+              this.pendingDecisions.set(id, transfer)
+              this.emit('transferRequest', meta)
+            })
+
+            if (!accepted) {
+              ws.send(JSON.stringify({ type: 'decision', accepted: false }))
+              this.pendingDecisions.delete(id)
+              transfer = null
+              ws.close()
+              return
+            }
+
+            const destPath = this.resolveDestPath(meta.filename)
+            transfer!.writeStream = fs.createWriteStream(destPath)
+            transfer!.state = 'receiving'
+            transfer!.startTime = Date.now()
+            expectingBinary = true
+            ws.send(JSON.stringify({ type: 'decision', accepted: true }))
+            this.emit('transferStart', meta)
+
+          } else if (msg.type === 'done') {
+            if (transfer?.state === 'receiving') {
+              transfer.writeStream?.end()
+              transfer.state = 'done'
+              this.emit('transferDone', transfer.meta)
+              ws.send(JSON.stringify({ type: 'ack' }))
+              this.pendingDecisions.delete(transfer.meta.id)
+            }
+          }
+        } catch {
+          ws.close()
+        }
+      } else {
+        // binary chunk
+        if (!transfer || !expectingBinary || !transfer.writeStream) return
+
+        const chunk = data as Buffer
+        transfer.writeStream.write(chunk)
+        transfer.bytesReceived += chunk.byteLength
+
+        const elapsed = (Date.now() - transfer.startTime) / 1000 || 0.001
+        const speedBps = transfer.bytesReceived / elapsed
+
+        const progress: TransferProgress = {
+          id: transfer.meta.id,
+          bytesReceived: transfer.bytesReceived,
+          totalBytes: transfer.meta.size,
+          speedBps
+        }
+        this.emit('transferProgress', progress)
+      }
+    })
+
+    ws.on('error', () => {
+      if (transfer?.state === 'receiving') {
+        transfer.writeStream?.destroy()
+        this.emit('transferError', transfer.meta.id)
+        this.pendingDecisions.delete(transfer.meta.id)
+      }
+    })
+
+    ws.on('close', () => {
+      if (transfer?.state === 'receiving') {
+        transfer.writeStream?.destroy()
+        this.emit('transferError', transfer.meta.id)
+        this.pendingDecisions.delete(transfer.meta.id)
+      }
+    })
+  }
+
+  private resolveDestPath(filename: string): string {
+    const dest = path.join(this.downloadDir, filename)
+    if (!fs.existsSync(dest)) return dest
+
+    const ext = path.extname(filename)
+    const base = path.basename(filename, ext)
+    let counter = 1
+    let candidate: string
+    do {
+      candidate = path.join(this.downloadDir, `${base} (${counter})${ext}`)
+      counter++
+    } while (fs.existsSync(candidate))
+    return candidate
+  }
+
+  resolveTransfer(id: string, accepted: boolean): void {
+    const transfer = this.pendingDecisions.get(id)
+    if (transfer?.state === 'pending') {
+      transfer.state = accepted ? 'accepted' : 'rejected'
+      transfer.resolve(accepted)
+    }
+  }
+
+  setDownloadDir(dir: string): void {
+    this.downloadDir = dir
+  }
+
+  start(): Promise<void> {
+    return new Promise((resolve) => {
+      this.httpServer.listen(WS_PORT, () => resolve())
+    })
+  }
+
+  stop(): Promise<void> {
+    return new Promise((resolve) => {
+      this.wss.close(() => {
+        this.httpServer.close(() => resolve())
+      })
+    })
+  }
+}
