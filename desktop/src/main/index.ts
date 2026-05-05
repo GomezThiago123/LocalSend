@@ -9,6 +9,7 @@ import {
 } from 'electron'
 import { join } from 'path'
 import { homedir } from 'os'
+import { existsSync, statSync } from 'fs'
 import Store from 'electron-store'
 import { UdpDiscoveryServer } from './udpServer'
 import { WsTransferServer, WS_PORT } from './wsServer'
@@ -172,7 +173,11 @@ ipcMain.handle('transfer:resolveCollision', (_, id: string, choice: 'replace' | 
 ipcMain.handle('devices:list', () => udpServer?.getDevices() ?? [])
 
 ipcMain.handle('shell:openPath', (_, filePath: string) => {
-  shell.showItemInFolder(filePath)
+  if (existsSync(filePath) && statSync(filePath).isDirectory()) {
+    shell.openPath(filePath)
+  } else {
+    shell.showItemInFolder(filePath)
+  }
 })
 
 ipcMain.handle('dialog:pickFiles', async () => {

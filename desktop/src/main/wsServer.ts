@@ -31,6 +31,7 @@ interface ActiveTransfer {
   writeStream: fs.WriteStream | null
   bytesReceived: number
   startTime: number
+  savedPath: string
   resolve: (accepted: boolean) => void
 }
 
@@ -129,6 +130,7 @@ export class WsTransferServer extends EventEmitter {
                 writeStream: null,
                 bytesReceived: 0,
                 startTime: 0,
+                savedPath: '',
                 resolve
               }
               this.pendingDecisions.set(id, transfer)
@@ -166,15 +168,30 @@ export class WsTransferServer extends EventEmitter {
             transfer!.writeStream = fs.createWriteStream(destPath)
             transfer!.state = 'receiving'
             transfer!.startTime = Date.now()
-            expectingBinary = true
+            transfer!.savedPath = destPath
             ws.send(JSON.stringify({ type: 'decision', accepted: true }))
             this.emit('transferStart', meta)
+
+          } else if (msg.type === 'chunk') {
+            // Base64 text chunk from mobile (Expo Go compatible protocol)
+            if (!transfer || transfer.state !== 'receiving' || !transfer.writeStream) return
+            const chunk = Buffer.from(msg.data, 'base64')
+            transfer.writeStream.write(chunk)
+            transfer.bytesReceived += chunk.byteLength
+
+            const elapsed = (Date.now() - transfer.startTime) / 1000 || 0.001
+            this.emit('transferProgress', {
+              id: transfer.meta.id,
+              bytesReceived: transfer.bytesReceived,
+              totalBytes: transfer.meta.size,
+              speedBps: transfer.bytesReceived / elapsed
+            } as TransferProgress)
 
           } else if (msg.type === 'done') {
             if (transfer?.state === 'receiving') {
               transfer.writeStream?.end()
               transfer.state = 'done'
-              this.emit('transferDone', transfer.meta)
+              this.emit('transferDone', { ...transfer.meta, savedPath: transfer.savedPath })
               ws.send(JSON.stringify({ type: 'ack' }))
               this.pendingDecisions.delete(transfer.meta.id)
             }
@@ -182,25 +199,8 @@ export class WsTransferServer extends EventEmitter {
         } catch {
           ws.close()
         }
-      } else {
-        // binary chunk
-        if (!transfer || !expectingBinary || !transfer.writeStream) return
-
-        const chunk = data as Buffer
-        transfer.writeStream.write(chunk)
-        transfer.bytesReceived += chunk.byteLength
-
-        const elapsed = (Date.now() - transfer.startTime) / 1000 || 0.001
-        const speedBps = transfer.bytesReceived / elapsed
-
-        const progress: TransferProgress = {
-          id: transfer.meta.id,
-          bytesReceived: transfer.bytesReceived,
-          totalBytes: transfer.meta.size,
-          speedBps
-        }
-        this.emit('transferProgress', progress)
       }
+      // binary frames kept for future desktop↔desktop transfers
     })
 
     ws.on('error', () => {

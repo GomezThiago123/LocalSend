@@ -7,6 +7,7 @@ interface Props {
   downloadDir: string
   onAliasChange: (alias: string) => void
   onPickDownloadDir: () => void
+  onOpenDownloadDir: () => void
 }
 
 export default function Header({
@@ -15,7 +16,8 @@ export default function Header({
   serverActive,
   downloadDir,
   onAliasChange,
-  onPickDownloadDir
+  onPickDownloadDir,
+  onOpenDownloadDir
 }: Props): JSX.Element {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(alias)
@@ -49,7 +51,12 @@ export default function Header({
       <div style={styles.right}>
         <span style={{ ...styles.led, background: serverActive ? 'var(--green)' : 'var(--red)' }} />
         <span style={styles.ledLabel}>{serverActive ? 'Activo' : 'Inactivo'}</span>
-        <button style={styles.dirBtn} onClick={onPickDownloadDir} title={downloadDir}>
+        <button
+          style={styles.dirBtn}
+          onClick={onOpenDownloadDir}
+          onContextMenu={(e) => { e.preventDefault(); onPickDownloadDir() }}
+          title={`${downloadDir}\n(click derecho para cambiar)`}
+        >
           📁 Descargas
         </button>
       </div>

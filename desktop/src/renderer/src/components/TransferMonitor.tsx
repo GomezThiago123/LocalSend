@@ -79,8 +79,8 @@ export default function TransferMonitor({ transfers, onOpenPath }: Props): JSX.E
                     <span>ETA: {formatEta(t.progress)}</span>
                   </>
                 )}
-                {t.status === 'done' && (
-                  <button style={styles.openBtn} onClick={() => onOpenPath(t.meta.filename)}>
+                {t.status === 'done' && t.savedPath && (
+                  <button style={styles.openBtn} onClick={() => onOpenPath(t.savedPath!)}>
                     Abrir carpeta
                   </button>
                 )}

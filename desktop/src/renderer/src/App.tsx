@@ -12,6 +12,7 @@ export interface ActiveTransfer {
   meta: TransferMetadata
   progress: TransferProgress | null
   status: 'receiving' | 'done' | 'error'
+  savedPath?: string
 }
 
 export default function App(): JSX.Element {
@@ -71,11 +72,11 @@ export default function App(): JSX.Element {
         return next
       })
     })
-    api.onTransferDone((meta: TransferMetadata) => {
+    api.onTransferDone((meta: TransferMetadata & { savedPath?: string }) => {
       setTransfers((prev) => {
         const next = new Map(prev)
         const t = next.get(meta.id)
-        if (t) next.set(meta.id, { ...t, status: 'done' })
+        if (t) next.set(meta.id, { ...t, status: 'done', savedPath: meta.savedPath })
         return next
       })
       setPendingRequest((prev) => (prev?.id === meta.id ? null : prev))
@@ -140,6 +141,7 @@ export default function App(): JSX.Element {
         downloadDir={config.downloadDir}
         onAliasChange={handleAliasChange}
         onPickDownloadDir={handlePickDownloadDir}
+        onOpenDownloadDir={() => api.openPath(config.downloadDir)}
       />
       <main style={styles.main}>
         <div style={styles.left}>

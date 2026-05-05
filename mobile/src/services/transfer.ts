@@ -1,7 +1,7 @@
 import { EventEmitter } from 'eventemitter3'
-import * as FileSystem from 'expo-file-system'
+import { readAsStringAsync, copyAsync, cacheDirectory, EncodingType } from 'expo-file-system/legacy'
 
-const CHUNK_SIZE = 48 * 1024 // 48 KB — mobile-safe chunk
+const CHUNK_BYTES = 48 * 1024 // 48 KB por chunk
 
 export interface TransferOptions {
   deviceIp: string
@@ -32,101 +32,112 @@ export class TransferClient extends EventEmitter {
 
     return new Promise<void>((resolve, reject) => {
       const ws = this.ws!
+      let settled = false
+      const settle = (fn: () => void) => {
+        if (!settled) { settled = true; fn() }
+      }
 
       ws.onopen = () => {
         this.status = 'waiting'
         this.emit('status', this.status)
-        ws.send(
-          JSON.stringify({
-            type: 'metadata',
-            filename: opts.filename,
-            size: opts.size,
-            mime: opts.mime,
-            senderAlias: opts.senderAlias
-          })
-        )
+        ws.send(JSON.stringify({
+          type: 'metadata',
+          filename: opts.filename,
+          size: opts.size,
+          mime: opts.mime,
+          senderAlias: opts.senderAlias
+        }))
       }
 
       ws.onmessage = async (e) => {
         try {
-          const msg = JSON.parse(e.data)
+          const msg = JSON.parse(e.data as string)
+
           if (msg.type === 'decision') {
             if (!msg.accepted) {
               this.status = 'rejected'
               this.emit('status', this.status)
               ws.close()
-              reject(new Error('rejected'))
+              settle(() => reject(new Error('rejected')))
               return
             }
-            // Accepted — start streaming
             this.status = 'sending'
             this.emit('status', this.status)
             await this.streamFile(opts, ws)
             ws.send(JSON.stringify({ type: 'done' }))
+
           } else if (msg.type === 'ack') {
             this.status = 'done'
             this.emit('status', this.status)
             ws.close()
-            resolve()
+            settle(() => resolve())
           }
         } catch (err) {
           this.status = 'error'
           this.emit('status', this.status)
-          reject(err)
+          settle(() => reject(err))
         }
       }
 
-      ws.onerror = (err) => {
+      ws.onerror = () => {
         this.status = 'error'
         this.emit('status', this.status)
-        reject(err)
+        settle(() => reject(new Error('WebSocket error')))
       }
 
       ws.onclose = () => {
         if (this.status !== 'done' && this.status !== 'rejected') {
           this.status = 'error'
           this.emit('status', this.status)
-          reject(new Error('connection closed unexpectedly'))
+          settle(() => reject(new Error('Conexión cerrada inesperadamente')))
         }
       }
     })
   }
 
   private async streamFile(opts: TransferOptions, ws: WebSocket): Promise<void> {
-    const { size, fileUri } = opts
+    const { size } = opts
     const startTime = Date.now()
 
-    // Read entire file as base64 — more reliable than position-based reads
-    // across all Android URI types (content://, file://)
-    const fullB64 = await FileSystem.readAsStringAsync(fileUri, {
-      encoding: FileSystem.EncodingType.Base64
-    })
+    // content:// URIs no soportan lectura por posición — copiamos a file:// primero
+    const fileUri = await this.toFileUri(opts.fileUri, opts.filename)
 
-    // Each 3 bytes → 4 base64 chars, so chunk in base64 chars (multiple of 4)
-    const b64CharsPerChunk = Math.ceil((CHUNK_SIZE / 3) * 4 / 4) * 4
-    let charOffset = 0
-    let bytesSent = 0
+    let offset = 0
 
-    while (charOffset < fullB64.length) {
-      const chunkB64 = fullB64.slice(charOffset, charOffset + b64CharsPerChunk)
-      const binary = atob(chunkB64)
-      const buf = new ArrayBuffer(binary.length)
-      const view = new Uint8Array(buf)
-      for (let i = 0; i < binary.length; i++) {
-        view[i] = binary.charCodeAt(i)
-      }
+    // Leemos el archivo en chunks de CHUNK_BYTES — nunca se carga completo en RAM
+    while (offset < size) {
+      const length = Math.min(CHUNK_BYTES, size - offset)
 
-      ws.send(buf)
-      charOffset += b64CharsPerChunk
-      bytesSent = Math.min(bytesSent + binary.length, size)
+      const chunkB64 = await readAsStringAsync(fileUri, {
+        encoding: EncodingType.Base64,
+        position: offset,
+        length
+      })
+
+      // Enviamos el chunk como JSON base64 — compatible con Expo Go
+      ws.send(JSON.stringify({ type: 'chunk', data: chunkB64 }))
+
+      offset += length
 
       const elapsed = (Date.now() - startTime) / 1000 || 0.001
-      const speedBps = bytesSent / elapsed
-      this.emit('progress', { bytesSent, totalBytes: size, speedBps } as TransferProgress)
+      this.emit('progress', {
+        bytesSent: offset,
+        totalBytes: size,
+        speedBps: offset / elapsed
+      } as TransferProgress)
 
-      // Yield to keep UI responsive between chunks
-      await new Promise((r) => setTimeout(r, 0))
+      // Cede el hilo para que la UI no se congele
+      await new Promise<void>((r) => setTimeout(() => r(), 1))
     }
+  }
+
+  // Convierte cualquier URI a file:// accesible por FileSystem
+  private async toFileUri(uri: string, filename: string): Promise<string> {
+    if (!uri.startsWith('content://')) return uri
+    const ext = filename.includes('.') ? filename.split('.').pop() : 'bin'
+    const dest = `${cacheDirectory}ls_${Date.now()}.${ext}`
+    await copyAsync({ from: uri, to: dest })
+    return dest
   }
 
   cancel(): void {
