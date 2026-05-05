@@ -5,6 +5,7 @@ import DeviceList from './components/DeviceList'
 import DropZone from './components/DropZone'
 import TransferMonitor from './components/TransferMonitor'
 import TransferRequestModal from './components/TransferRequestModal'
+import CollisionModal from './components/CollisionModal'
 import Header from './components/Header'
 
 export interface ActiveTransfer {
@@ -17,6 +18,7 @@ export default function App(): JSX.Element {
   const [devices, setDevices] = useState<DiscoveredDevice[]>([])
   const [transfers, setTransfers] = useState<Map<string, ActiveTransfer>>(new Map())
   const [pendingRequest, setPendingRequest] = useState<TransferMetadata | null>(null)
+  const [pendingCollision, setPendingCollision] = useState<{ id: string; filename: string } | null>(null)
   const [config, setConfig] = useState({ alias: '', downloadDir: '', localIp: '' })
   const [serverActive, setServerActive] = useState(false)
 
@@ -47,6 +49,9 @@ export default function App(): JSX.Element {
 
     api.onTransferRequest((meta: TransferMetadata) => {
       setPendingRequest(meta)
+    })
+    api.onTransferCollision((d: { id: string; filename: string }) => {
+      setPendingCollision(d)
     })
     api.onTransferDecision((d: { id: string; accepted: boolean }) => {
       if (pendingRequest?.id === d.id) setPendingRequest(null)
@@ -90,6 +95,7 @@ export default function App(): JSX.Element {
         'transfer:request', 'transfer:start', 'transfer:progress',
         'transfer:done', 'transfer:error', 'transfer:decision'
       ]
+      channels.push('transfer:collision')
       channels.forEach((ch) => api.removeAllListeners(ch))
     }
   }, [])
@@ -149,6 +155,14 @@ export default function App(): JSX.Element {
           meta={pendingRequest}
           onAccept={() => handleAccept(pendingRequest.id)}
           onReject={() => handleReject(pendingRequest.id)}
+        />
+      )}
+      {pendingCollision && (
+        <CollisionModal
+          filename={pendingCollision.filename}
+          onReplace={() => { api.resolveCollision(pendingCollision.id, 'replace'); setPendingCollision(null) }}
+          onRename={() => { api.resolveCollision(pendingCollision.id, 'rename'); setPendingCollision(null) }}
+          onSkip={() => { api.resolveCollision(pendingCollision.id, 'skip'); setPendingCollision(null) }}
         />
       )}
     </div>

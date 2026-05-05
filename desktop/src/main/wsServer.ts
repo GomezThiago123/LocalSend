@@ -44,19 +44,49 @@ export class WsTransferServer extends EventEmitter {
     super()
     this.downloadDir = downloadDir
     this.httpServer = http.createServer((req, res) => {
-      // Expo Go discovery: GET /info returns device metadata as JSON
+      res.setHeader('Access-Control-Allow-Origin', '*')
+
+      // Mobile discovery: GET /info returns this device's metadata
       if (req.method === 'GET' && req.url === '/info') {
-        res.writeHead(200, {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*'
-        })
-        res.end(JSON.stringify({
-          alias: this.alias,
-          deviceType: 'desktop',
-          port: WS_PORT
-        }))
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ alias: this.alias, deviceType: 'desktop', port: WS_PORT }))
         return
       }
+
+      // Mobile registration: POST /register → desktop shows mobile in its device list
+      if (req.method === 'POST' && req.url === '/register') {
+        let body = ''
+        req.on('data', (chunk) => { body += chunk })
+        req.on('end', () => {
+          try {
+            const data = JSON.parse(body)
+            const senderIp = req.socket.remoteAddress?.replace('::ffff:', '') ?? 'unknown'
+            this.emit('deviceFound', {
+              alias: data.alias ?? senderIp,
+              deviceType: data.deviceType ?? 'mobile',
+              ip: senderIp,
+              port: data.port ?? WS_PORT,
+              lastSeen: Date.now()
+            })
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ ok: true }))
+          } catch {
+            res.writeHead(400)
+            res.end()
+          }
+        })
+        return
+      }
+
+      // DELETE /register → mobile going offline
+      if (req.method === 'DELETE' && req.url === '/register') {
+        const senderIp = req.socket.remoteAddress?.replace('::ffff:', '') ?? 'unknown'
+        this.emit('deviceLost', senderIp)
+        res.writeHead(200)
+        res.end()
+        return
+      }
+
       res.writeHead(404)
       res.end()
     })
@@ -113,7 +143,26 @@ export class WsTransferServer extends EventEmitter {
               return
             }
 
-            const destPath = this.resolveDestPath(meta.filename)
+            // Check for filename collision and ask user how to handle it
+            const baseDest = path.join(this.downloadDir, path.basename(meta.filename))
+            let destPath: string
+            if (fs.existsSync(baseDest)) {
+              const choice = await new Promise<'replace' | 'rename' | 'skip'>((res) => {
+                this.collisionResolvers.set(meta.id, res)
+                this.emit('transferCollision', { id: meta.id, filename: meta.filename })
+              })
+              if (choice === 'skip') {
+                ws.send(JSON.stringify({ type: 'decision', accepted: false }))
+                this.pendingDecisions.delete(id)
+                transfer = null
+                ws.close()
+                return
+              }
+              destPath = choice === 'replace' ? baseDest : this.resolveDestPath(meta.filename)
+            } else {
+              destPath = baseDest
+            }
+
             transfer!.writeStream = fs.createWriteStream(destPath)
             transfer!.state = 'receiving'
             transfer!.startTime = Date.now()
@@ -191,6 +240,16 @@ export class WsTransferServer extends EventEmitter {
     if (transfer?.state === 'pending') {
       transfer.state = accepted ? 'accepted' : 'rejected'
       transfer.resolve(accepted)
+    }
+  }
+
+  private collisionResolvers = new Map<string, (choice: 'replace' | 'rename' | 'skip') => void>()
+
+  resolveCollision(id: string, choice: 'replace' | 'rename' | 'skip'): void {
+    const resolver = this.collisionResolvers.get(id)
+    if (resolver) {
+      resolver(choice)
+      this.collisionResolvers.delete(id)
     }
   }
 

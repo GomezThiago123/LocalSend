@@ -4,7 +4,7 @@ import * as Network from 'expo-network'
 export const WS_PORT = 53318
 const SCAN_INTERVAL_MS = 5000
 const PROBE_TIMEOUT_MS = 800
-const PROBE_BATCH = 25        // IPs simultáneas por batch
+const PROBE_BATCH = 25
 const HEALTH_INTERVAL_MS = 4000
 
 export interface DiscoveredDevice {
@@ -26,6 +26,12 @@ export class DiscoveryService extends EventEmitter {
   private scanTimer: ReturnType<typeof setInterval> | null = null
   private healthTimer: ReturnType<typeof setInterval> | null = null
   private scanning = false
+  private alias: string
+
+  constructor(alias: string) {
+    super()
+    this.alias = alias
+  }
 
   async start(): Promise<void> {
     await this.scan()
@@ -36,7 +42,6 @@ export class DiscoveryService extends EventEmitter {
   private async getSubnetPrefix(): Promise<string | null> {
     try {
       const ip = await Network.getIpAddressAsync()
-      // e.g. "192.168.1.15" → "192.168.1."
       const parts = ip.split('.')
       if (parts.length !== 4) return null
       return `${parts[0]}.${parts[1]}.${parts[2]}.`
@@ -49,9 +54,7 @@ export class DiscoveryService extends EventEmitter {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS)
     try {
-      const res = await fetch(`http://${ip}:${WS_PORT}/info`, {
-        signal: controller.signal
-      })
+      const res = await fetch(`http://${ip}:${WS_PORT}/info`, { signal: controller.signal })
       if (!res.ok) return null
       const data: DeviceInfo = await res.json()
       if (!data.alias) return null
@@ -69,27 +72,45 @@ export class DiscoveryService extends EventEmitter {
     }
   }
 
+  // Tell the desktop we exist so it shows us in its device list
+  private async registerWith(ip: string): Promise<void> {
+    try {
+      await fetch(`http://${ip}:${WS_PORT}/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ alias: this.alias, deviceType: 'mobile', port: WS_PORT })
+      })
+    } catch {
+      // best-effort
+    }
+  }
+
+  private async unregisterFrom(ip: string): Promise<void> {
+    try {
+      await fetch(`http://${ip}:${WS_PORT}/register`, { method: 'DELETE' })
+    } catch {}
+  }
+
   private async scan(): Promise<void> {
     if (this.scanning) return
     this.scanning = true
-
     try {
       const prefix = await this.getSubnetPrefix()
       if (!prefix) return
 
-      // Scan in batches to avoid flooding the network stack
       for (let start = 1; start <= 254; start += PROBE_BATCH) {
         const batch: Promise<void>[] = []
         for (let i = start; i < start + PROBE_BATCH && i <= 254; i++) {
           const ip = `${prefix}${i}`
           batch.push(
-            this.probeIp(ip).then((device) => {
+            this.probeIp(ip).then(async (device) => {
               if (!device) return
-              const existing = this.devices.get(ip)
+              const isNew = !this.devices.has(ip)
               device.lastSeen = Date.now()
               this.devices.set(ip, device)
-              if (!existing) {
+              if (isNew) {
                 this.emit('deviceFound', device)
+                await this.registerWith(ip) // tell desktop about us
               } else {
                 this.emit('deviceUpdated', device)
               }
@@ -111,6 +132,7 @@ export class DiscoveryService extends EventEmitter {
         this.emit('deviceLost', ip)
       } else {
         this.devices.set(ip, { ...device, lastSeen: Date.now() })
+        await this.registerWith(ip) // keep desktop's TTL alive
       }
     }
   }
@@ -122,5 +144,9 @@ export class DiscoveryService extends EventEmitter {
   stop(): void {
     if (this.scanTimer) clearInterval(this.scanTimer)
     if (this.healthTimer) clearInterval(this.healthTimer)
+    // unregister from all known desktops
+    for (const [ip] of this.devices) {
+      this.unregisterFrom(ip)
+    }
   }
 }

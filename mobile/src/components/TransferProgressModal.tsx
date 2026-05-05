@@ -9,6 +9,7 @@ interface Props {
   status: TransferStatus
   progress: TransferProgress | null
   onClose: () => void
+  onRetry?: () => void
 }
 
 function formatBytes(bytes: number): string {
@@ -38,7 +39,7 @@ const STATUS_LABELS: Record<TransferStatus, string> = {
 }
 
 export default function TransferProgressModal({
-  visible, deviceAlias, filename, status, progress, onClose
+  visible, deviceAlias, filename, status, progress, onClose, onRetry
 }: Props): JSX.Element {
   const barWidth = useRef(new Animated.Value(0)).current
 
@@ -88,9 +89,16 @@ export default function TransferProgressModal({
           </View>
 
           {canClose && (
-            <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
-              <Text style={styles.closeBtnText}>Cerrar</Text>
-            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', gap: 10, width: '100%' }}>
+              {status === 'error' && onRetry && (
+                <TouchableOpacity style={[styles.closeBtn, { flex: 1, backgroundColor: '#334155' }]} onPress={onRetry}>
+                  <Text style={styles.closeBtnText}>↺ Reintentar</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity style={[styles.closeBtn, { flex: 1 }]} onPress={onClose}>
+                <Text style={styles.closeBtnText}>{status === 'error' ? 'Cancelar' : 'Cerrar'}</Text>
+              </TouchableOpacity>
+            </View>
           )}
         </View>
       </View>

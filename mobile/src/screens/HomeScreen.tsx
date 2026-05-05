@@ -7,7 +7,8 @@ import {
   StyleSheet,
   StatusBar,
   SafeAreaView,
-  Alert
+  Alert,
+  useColorScheme
 } from 'react-native'
 import * as DocumentPicker from 'expo-document-picker'
 import * as ImagePicker from 'expo-image-picker'
@@ -21,8 +22,11 @@ import type { SelectedFile } from '../components/FileCard'
 import FileCard from '../components/FileCard'
 import RadarView from '../components/RadarView'
 import TransferProgressModal from '../components/TransferProgressModal'
+import { useTheme } from '../theme'
 
 export default function HomeScreen(): JSX.Element {
+  const t = useTheme()
+  const scheme = useColorScheme()
   const [alias, setAlias] = useState('')
   const [devices, setDevices] = useState<DiscoveredDevice[]>([])
   const [selectedFiles, setSelectedFiles] = useState<SelectedFile[]>([])
@@ -170,13 +174,13 @@ export default function HomeScreen(): JSX.Element {
   }
 
   return (
-    <SafeAreaView style={styles.safe}>
-      <StatusBar barStyle="light-content" backgroundColor="#0f172a" />
-      <View style={styles.header}>
-        <Text style={styles.logo}>⇄ LocalSend</Text>
+    <SafeAreaView style={[styles.safe, { backgroundColor: t.bg }]}>
+      <StatusBar barStyle={scheme === 'dark' ? 'light-content' : 'dark-content'} backgroundColor={t.bg} />
+      <View style={[styles.header, { backgroundColor: t.surface, borderBottomColor: t.border }]}>
+        <Text style={[styles.logo, { color: t.accent }]}>⇄ LocalSend</Text>
         <View style={styles.headerRight}>
-          <View style={[styles.wifiDot, { backgroundColor: isOnWifi ? '#22c55e' : '#ef4444' }]} />
-          <Text style={styles.aliasText}>{alias}</Text>
+          <View style={[styles.wifiDot, { backgroundColor: isOnWifi ? t.green : t.red }]} />
+          <Text style={[styles.aliasText, { color: t.textMuted }]}>{alias}</Text>
         </View>
       </View>
 
@@ -193,17 +197,17 @@ export default function HomeScreen(): JSX.Element {
 
         {/* File picker section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Archivos seleccionados</Text>
+          <Text style={[styles.sectionTitle, { color: t.textMuted }]}>Archivos seleccionados</Text>
           <View style={styles.pickerRow}>
-            <TouchableOpacity style={styles.pickerBtn} onPress={pickImage}>
-              <Text style={styles.pickerBtnText}>🖼 Galería</Text>
+            <TouchableOpacity style={[styles.pickerBtn, { backgroundColor: t.surface, borderColor: t.border }]} onPress={pickImage}>
+              <Text style={[styles.pickerBtnText, { color: t.text }]}>🖼 Galería</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.pickerBtn} onPress={pickDocument}>
-              <Text style={styles.pickerBtnText}>📁 Archivos</Text>
+            <TouchableOpacity style={[styles.pickerBtn, { backgroundColor: t.surface, borderColor: t.border }]} onPress={pickDocument}>
+              <Text style={[styles.pickerBtnText, { color: t.text }]}>📁 Archivos</Text>
             </TouchableOpacity>
           </View>
           {selectedFiles.length === 0 ? (
-            <Text style={styles.noFiles}>Ningún archivo seleccionado</Text>
+            <Text style={[styles.noFiles, { color: t.textMuted }]}>Ningún archivo seleccionado</Text>
           ) : (
             selectedFiles.map((f, i) => (
               <FileCard
@@ -218,11 +222,11 @@ export default function HomeScreen(): JSX.Element {
         {/* Devices list (below radar for quick access) */}
         {devices.length > 0 && (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Dispositivos ({devices.length})</Text>
+            <Text style={[styles.sectionTitle, { color: t.textMuted }]}>Dispositivos ({devices.length})</Text>
             {devices.map((d) => (
               <TouchableOpacity
                 key={d.ip}
-                style={styles.deviceRow}
+                style={[styles.deviceRow, { backgroundColor: t.surface, borderColor: t.border }]}
                 onPress={() => sendToDevice(d)}
                 activeOpacity={0.7}
               >
@@ -230,10 +234,10 @@ export default function HomeScreen(): JSX.Element {
                   {d.deviceType === 'desktop' ? '🖥' : d.deviceType === 'mobile' ? '📱' : '💻'}
                 </Text>
                 <View style={styles.deviceInfo}>
-                  <Text style={styles.deviceName}>{d.alias}</Text>
-                  <Text style={styles.deviceIp}>{d.ip}</Text>
+                  <Text style={[styles.deviceName, { color: t.text }]}>{d.alias}</Text>
+                  <Text style={[styles.deviceIp, { color: t.textMuted }]}>{d.ip}</Text>
                 </View>
-                <Text style={styles.chevron}>›</Text>
+                <Text style={[styles.chevron, { color: t.accent }]}>›</Text>
               </TouchableOpacity>
             ))}
           </View>
@@ -248,6 +252,10 @@ export default function HomeScreen(): JSX.Element {
           status={transferStatus}
           progress={transferProgress}
           onClose={() => setTransferModal(false)}
+          onRetry={() => {
+            setTransferModal(false)
+            setTimeout(() => startTransfer(transferDevice, transferFile), 300)
+          }}
         />
       )}
     </SafeAreaView>

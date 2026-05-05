@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Transfer actions
   decideTransfer: (id: string, accepted: boolean) =>
     ipcRenderer.invoke('transfer:decide', id, accepted),
+  resolveCollision: (id: string, choice: 'replace' | 'rename' | 'skip') =>
+    ipcRenderer.invoke('transfer:resolveCollision', id, choice),
   pickFiles: () => ipcRenderer.invoke('dialog:pickFiles'),
   openPath: (filePath: string) => ipcRenderer.invoke('shell:openPath', filePath),
 
@@ -50,6 +52,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onTransferDecision: (cb: (d: { id: string; accepted: boolean }) => void) => {
     ipcRenderer.on('transfer:decision', (_, d) => cb(d))
+  },
+  onTransferCollision: (cb: (d: { id: string; filename: string }) => void) => {
+    ipcRenderer.on('transfer:collision', (_, d) => cb(d))
   },
 
   removeAllListeners: (channel: string) => {

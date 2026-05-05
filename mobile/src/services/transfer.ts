@@ -94,36 +94,38 @@ export class TransferClient extends EventEmitter {
 
   private async streamFile(opts: TransferOptions, ws: WebSocket): Promise<void> {
     const { size, fileUri } = opts
-    let offset = 0
     const startTime = Date.now()
 
-    while (offset < size) {
-      const length = Math.min(CHUNK_SIZE, size - offset)
-      // Read chunk as base64, convert to ArrayBuffer
-      const b64 = await FileSystem.readAsStringAsync(fileUri, {
-        encoding: FileSystem.EncodingType.Base64,
-        position: offset,
-        length
-      })
-      const binary = atob(b64)
+    // Read entire file as base64 — more reliable than position-based reads
+    // across all Android URI types (content://, file://)
+    const fullB64 = await FileSystem.readAsStringAsync(fileUri, {
+      encoding: FileSystem.EncodingType.Base64
+    })
+
+    // Each 3 bytes → 4 base64 chars, so chunk in base64 chars (multiple of 4)
+    const b64CharsPerChunk = Math.ceil((CHUNK_SIZE / 3) * 4 / 4) * 4
+    let charOffset = 0
+    let bytesSent = 0
+
+    while (charOffset < fullB64.length) {
+      const chunkB64 = fullB64.slice(charOffset, charOffset + b64CharsPerChunk)
+      const binary = atob(chunkB64)
       const buf = new ArrayBuffer(binary.length)
       const view = new Uint8Array(buf)
       for (let i = 0; i < binary.length; i++) {
         view[i] = binary.charCodeAt(i)
       }
 
-      // Wait for socket buffer to drain to avoid OOM on large files
-      while (ws.bufferedAmount > CHUNK_SIZE * 4) {
-        await new Promise((r) => setTimeout(r, 10))
-      }
-
       ws.send(buf)
-      offset += length
+      charOffset += b64CharsPerChunk
+      bytesSent = Math.min(bytesSent + binary.length, size)
 
       const elapsed = (Date.now() - startTime) / 1000 || 0.001
-      const speedBps = offset / elapsed
-      const progress: TransferProgress = { bytesSent: offset, totalBytes: size, speedBps }
-      this.emit('progress', progress)
+      const speedBps = bytesSent / elapsed
+      this.emit('progress', { bytesSent, totalBytes: size, speedBps } as TransferProgress)
+
+      // Yield to keep UI responsive between chunks
+      await new Promise((r) => setTimeout(r, 0))
     }
   }
 

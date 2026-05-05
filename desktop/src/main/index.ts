@@ -77,6 +77,14 @@ async function startServers(): Promise<void> {
     mainWindow?.webContents.send('device:lost', ip)
   })
 
+  // Mobile devices register via HTTP POST /register (Expo Go compatible)
+  wsServer.on('deviceFound', (device) => {
+    mainWindow?.webContents.send('device:found', device)
+  })
+  wsServer.on('deviceLost', (ip: string) => {
+    mainWindow?.webContents.send('device:lost', ip)
+  })
+
   wsServer.on('transferRequest', (meta) => {
     mainWindow?.webContents.send('transfer:request', meta)
     // native notification while app is in background
@@ -98,6 +106,9 @@ async function startServers(): Promise<void> {
     }
   })
 
+  wsServer.on('transferCollision', (data: { id: string; filename: string }) => {
+    mainWindow?.webContents.send('transfer:collision', data)
+  })
   wsServer.on('transferStart', (meta) => {
     mainWindow?.webContents.send('transfer:start', meta)
   })
@@ -152,6 +163,10 @@ ipcMain.handle('config:setDownloadDir', async () => {
 
 ipcMain.handle('transfer:decide', (_, id: string, accepted: boolean) => {
   wsServer?.resolveTransfer(id, accepted)
+})
+
+ipcMain.handle('transfer:resolveCollision', (_, id: string, choice: 'replace' | 'rename' | 'skip') => {
+  wsServer?.resolveCollision(id, choice)
 })
 
 ipcMain.handle('devices:list', () => udpServer?.getDevices() ?? [])
