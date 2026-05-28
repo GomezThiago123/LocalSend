@@ -18,7 +18,7 @@ interface Props {
   onDevicePress: (device: DiscoveredDevice) => void
 }
 
-export default function RadarView({ devices, onDevicePress }: Props): JSX.Element {
+export default function RadarView({ devices, onDevicePress }: Props): React.JSX.Element {
   const rotation = useRef(new Animated.Value(0)).current
   const pulse = useRef(new Animated.Value(1)).current
 

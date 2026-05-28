@@ -21,7 +21,7 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 ** 3).toFixed(2)} GB`
 }
 
-export default function FileCard({ file, onRemove }: Props): JSX.Element {
+export default function FileCard({ file, onRemove }: Props): React.JSX.Element {
   const isImage = file.mimeType.startsWith('image/')
 
   return (

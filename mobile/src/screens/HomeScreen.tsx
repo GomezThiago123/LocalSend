@@ -18,13 +18,14 @@ import { DiscoveryService, type DiscoveredDevice } from '../services/discovery'
 import { TransferClient, type TransferProgress, type TransferStatus } from '../services/transfer'
 import { getOrCreateAlias } from '../services/deviceAlias'
 import { requestMediaPermission } from '../services/permissions'
+import { setupNotificationChannel, startForegroundTask, stopForegroundTask } from '../services/foregroundTask'
 import type { SelectedFile } from '../components/FileCard'
 import FileCard from '../components/FileCard'
 import RadarView from '../components/RadarView'
 import TransferProgressModal from '../components/TransferProgressModal'
 import { useTheme } from '../theme'
 
-export default function HomeScreen(): JSX.Element {
+export default function HomeScreen(): React.JSX.Element {
   const t = useTheme()
   const scheme = useColorScheme()
   const [alias, setAlias] = useState('')
@@ -43,6 +44,7 @@ export default function HomeScreen(): JSX.Element {
     let mounted = true
 
     async function init(): Promise<void> {
+      await setupNotificationChannel()
       const a = await getOrCreateAlias()
       if (!mounted) return
       setAlias(a)
@@ -157,6 +159,9 @@ export default function HomeScreen(): JSX.Element {
     client.on('status', (s: TransferStatus) => setTransferStatus(s))
     client.on('progress', (p: TransferProgress) => setTransferProgress(p))
 
+    // Mantiene la pantalla encendida y muestra notificación persistente
+    // para que Android no mate el proceso si el usuario cambia de app.
+    const notifId = await startForegroundTask(file.name)
     try {
       await client.send({
         deviceIp: device.ip,
@@ -170,6 +175,8 @@ export default function HomeScreen(): JSX.Element {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
     } catch {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
+    } finally {
+      await stopForegroundTask(notifId)
     }
   }
 

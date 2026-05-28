@@ -5,12 +5,36 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "color": "#6366f1",
+          "androidMode": "default",
+          "androidCollapsedTitle": "LocalSend"
+        }
+      ]
+    ],
     "android": {
-      "package": "com.localsend.mobile"
+      "package": "com.localsend.mobile",
+      "permissions": [
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "READ_MEDIA_IMAGES",
+        "READ_MEDIA_VIDEO",
+        "READ_MEDIA_AUDIO",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_DATA_SYNC",
+        "POST_NOTIFICATIONS"
+      ]
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.localsend.mobile"
+      "bundleIdentifier": "com.localsend.mobile",
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "LocalSend necesita acceso a la red local para descubrir dispositivos cercanos.",
+        "NSBonjourServices": ["_localsend._tcp"]
+      }
     },
     "scheme": "localsend"
   }

@@ -40,7 +40,7 @@ const STATUS_LABELS: Record<TransferStatus, string> = {
 
 export default function TransferProgressModal({
   visible, deviceAlias, filename, status, progress, onClose, onRetry
-}: Props): JSX.Element {
+}: Props): React.JSX.Element {
   const barWidth = useRef(new Animated.Value(0)).current
 
   const pct = progress
