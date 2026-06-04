@@ -38,3 +38,4 @@ Implementación de LocalSend: transferencia de archivos entre dispositivos en la
 - `INSTRUCCIONES.md` — guia de configuracion de red y build
 
 Ver [INSTRUCCIONES.md](./INSTRUCCIONES.md) para ejecutar el proyecto.
+Ver [GuíadeDefensa.md](GuíadeDefensa.md) para defender mi código
