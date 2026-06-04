@@ -36,6 +36,8 @@ Implementación de LocalSend: transferencia de archivos entre dispositivos en la
 - `desktop/` — codigo fuente Electron app
 - `mobile/` — codigo fuente React Native app
 - `INSTRUCCIONES.md` — guia de configuracion de red y build
+- `GuíadeDefensa.md` — guia de defensa para mi código
 
 Ver [INSTRUCCIONES.md](./INSTRUCCIONES.md) para ejecutar el proyecto.
+
 Ver [GuíadeDefensa.md](GuíadeDefensa.md) para defender mi código
