@@ -197,6 +197,11 @@ export class WsTransferServer extends EventEmitter {
             }
           }
         } catch {
+          if (transfer?.state === 'receiving') {
+            transfer.writeStream?.destroy()
+            this.emit('transferError', { id: transfer.meta.id, reason: 'protocol' })
+            this.pendingDecisions.delete(transfer.meta.id)
+          }
           ws.close()
         }
       }
@@ -206,7 +211,7 @@ export class WsTransferServer extends EventEmitter {
     ws.on('error', () => {
       if (transfer?.state === 'receiving') {
         transfer.writeStream?.destroy()
-        this.emit('transferError', transfer.meta.id)
+        this.emit('transferError', { id: transfer.meta.id, reason: 'connection' })
         this.pendingDecisions.delete(transfer.meta.id)
       }
     })
@@ -214,7 +219,7 @@ export class WsTransferServer extends EventEmitter {
     ws.on('close', () => {
       if (transfer?.state === 'receiving') {
         transfer.writeStream?.destroy()
-        this.emit('transferError', transfer.meta.id)
+        this.emit('transferError', { id: transfer.meta.id, reason: 'connection' })
         this.pendingDecisions.delete(transfer.meta.id)
       }
     })

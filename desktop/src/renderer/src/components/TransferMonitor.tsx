@@ -85,12 +85,22 @@ export default function TransferMonitor({ transfers, onOpenPath }: Props): JSX.E
                   </button>
                 )}
               </div>
+              {t.status === 'error' && (
+                <p style={styles.errorHint}>
+                  {ERROR_MESSAGES[t.errorReason ?? ''] ?? 'Conexión perdida — verificá la red Wi-Fi y reintentá desde el dispositivo emisor.'}
+                </p>
+              )}
             </div>
           )
         })}
       </div>
     </div>
   )
+}
+
+const ERROR_MESSAGES: Record<string, string> = {
+  connection: 'Conexión interrumpida — pedile al remitente que reintente.',
+  protocol: 'Error de protocolo — reiniciá el envío desde el móvil.',
 }
 
 function StatusBadge({ status }: { status: ActiveTransfer['status'] }): JSX.Element {
@@ -212,5 +222,11 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 6,
     padding: '3px 10px',
     fontSize: 12
+  },
+  errorHint: {
+    fontSize: 12,
+    color: 'var(--red)',
+    marginTop: 4,
+    lineHeight: 1.5
   }
 }

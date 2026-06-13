@@ -256,6 +256,7 @@ export default function HomeScreen(): React.JSX.Element {
           visible={transferModal}
           deviceAlias={transferDevice.alias}
           filename={transferFile.name}
+          thumbnail={transferFile.thumbnail}
           status={transferStatus}
           progress={transferProgress}
           onClose={() => setTransferModal(false)}

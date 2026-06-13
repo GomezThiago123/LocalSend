@@ -123,8 +123,8 @@ async function startServers(): Promise<void> {
       body: `"${meta.filename}" received from ${meta.senderAlias}`
     }).show()
   })
-  wsServer.on('transferError', (id: string) => {
-    mainWindow?.webContents.send('transfer:error', id)
+  wsServer.on('transferError', (payload: { id: string; reason: string }) => {
+    mainWindow?.webContents.send('transfer:error', payload)
   })
 
   await udpServer.start()

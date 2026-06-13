@@ -13,6 +13,7 @@ export interface ActiveTransfer {
   progress: TransferProgress | null
   status: 'receiving' | 'done' | 'error'
   savedPath?: string
+  errorReason?: string
 }
 
 export default function App(): JSX.Element {
@@ -81,11 +82,11 @@ export default function App(): JSX.Element {
       })
       setPendingRequest((prev) => (prev?.id === meta.id ? null : prev))
     })
-    api.onTransferError((id: string) => {
+    api.onTransferError((payload: { id: string; reason: string }) => {
       setTransfers((prev) => {
         const next = new Map(prev)
-        const t = next.get(id)
-        if (t) next.set(id, { ...t, status: 'error' })
+        const t = next.get(payload.id)
+        if (t) next.set(payload.id, { ...t, status: 'error', errorReason: payload.reason })
         return next
       })
     })

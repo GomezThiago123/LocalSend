@@ -47,8 +47,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onTransferDone: (cb: (meta: TransferMetadata) => void) => {
     ipcRenderer.on('transfer:done', (_, meta) => cb(meta))
   },
-  onTransferError: (cb: (id: string) => void) => {
-    ipcRenderer.on('transfer:error', (_, id) => cb(id))
+  onTransferError: (cb: (payload: { id: string; reason: string }) => void) => {
+    ipcRenderer.on('transfer:error', (_, payload) => cb(payload))
   },
   onTransferDecision: (cb: (d: { id: string; accepted: boolean }) => void) => {
     ipcRenderer.on('transfer:decision', (_, d) => cb(d))

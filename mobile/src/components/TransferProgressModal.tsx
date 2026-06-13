@@ -1,11 +1,12 @@
 import React, { useEffect, useRef } from 'react'
-import { View, Text, Modal, StyleSheet, Animated, TouchableOpacity } from 'react-native'
+import { View, Text, Modal, Image, StyleSheet, Animated, TouchableOpacity } from 'react-native'
 import type { TransferProgress, TransferStatus } from '../services/transfer'
 
 interface Props {
   visible: boolean
   deviceAlias: string
   filename: string
+  thumbnail?: string
   status: TransferStatus
   progress: TransferProgress | null
   onClose: () => void
@@ -39,7 +40,7 @@ const STATUS_LABELS: Record<TransferStatus, string> = {
 }
 
 export default function TransferProgressModal({
-  visible, deviceAlias, filename, status, progress, onClose, onRetry
+  visible, deviceAlias, filename, thumbnail, status, progress, onClose, onRetry
 }: Props): React.JSX.Element {
   const barWidth = useRef(new Animated.Value(0)).current
 
@@ -64,6 +65,10 @@ export default function TransferProgressModal({
           <Text style={styles.title}>{STATUS_LABELS[status]}</Text>
           <Text style={styles.device}>→ {deviceAlias}</Text>
           <Text style={styles.filename} numberOfLines={1}>{filename}</Text>
+
+          {thumbnail ? (
+            <Image source={{ uri: thumbnail }} style={styles.thumbnail} resizeMode="cover" />
+          ) : null}
 
           <View style={styles.barBg}>
             <Animated.View style={[
@@ -136,6 +141,12 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     color: '#f1f5f9',
+    marginBottom: 16
+  },
+  thumbnail: {
+    width: '100%',
+    height: 120,
+    borderRadius: 10,
     marginBottom: 16
   },
   barBg: {
