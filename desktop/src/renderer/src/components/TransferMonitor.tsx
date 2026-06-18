@@ -1,8 +1,9 @@
 import React from 'react'
-import type { ActiveTransfer } from '../App'
+import type { ActiveTransfer, OutgoingTransfer } from '../App'
 
 interface Props {
   transfers: ActiveTransfer[]
+  outgoing: OutgoingTransfer[]
   onOpenPath: (p: string) => void
 }
 
@@ -17,22 +18,23 @@ function formatSpeed(bps: number): string {
   return `${formatBytes(bps)}/s`
 }
 
-function formatEta(progress: ActiveTransfer['progress']): string {
-  if (!progress || progress.speedBps === 0) return '—'
-  const remaining = progress.totalBytes - progress.bytesReceived
-  const secs = remaining / progress.speedBps
+function etaSeconds(remaining: number, speedBps: number): string {
+  if (speedBps === 0) return '—'
+  const secs = remaining / speedBps
   if (secs < 60) return `${Math.round(secs)}s`
   return `${Math.round(secs / 60)}m ${Math.round(secs % 60)}s`
 }
 
-export default function TransferMonitor({ transfers, onOpenPath }: Props): JSX.Element {
-  if (transfers.length === 0) {
+export default function TransferMonitor({ transfers, outgoing, onOpenPath }: Props): JSX.Element {
+  const totalItems = transfers.length + outgoing.length
+
+  if (totalItems === 0) {
     return (
       <div style={styles.empty}>
         <div style={{ fontSize: 48, marginBottom: 12 }}>📭</div>
         <p style={{ fontWeight: 600 }}>Sin transferencias activas</p>
         <p style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 6 }}>
-          Los archivos recibidos aparecerán aquí
+          Los archivos recibidos y enviados aparecerán aquí
         </p>
       </div>
     )
@@ -42,9 +44,55 @@ export default function TransferMonitor({ transfers, onOpenPath }: Props): JSX.E
     <div style={styles.container}>
       <h2 style={styles.title}>
         Transferencias
-        <span style={styles.badge}>{transfers.length}</span>
+        <span style={styles.badge}>{totalItems}</span>
       </h2>
       <div style={styles.list}>
+        {outgoing.map((t) => {
+          const pct = t.size > 0
+            ? Math.round((t.bytesSent / t.size) * 100)
+            : t.status === 'done' ? 100 : 0
+
+          return (
+            <div key={t.id} style={styles.card}>
+              <div style={styles.cardHeader}>
+                <span style={styles.dirLabel}>↑ Enviando</span>
+                <span style={styles.filename}>{t.filename}</span>
+                <OutgoingBadge status={t.status} />
+              </div>
+              <div style={styles.meta}>
+                <span style={styles.metaItem}>A: {t.targetAlias}</span>
+                <span style={styles.metaItem}>{t.targetIp}</span>
+                <span style={styles.metaItem}>{formatBytes(t.size)}</span>
+              </div>
+              <div style={styles.barBg}>
+                <div
+                  style={{
+                    ...styles.barFill,
+                    width: `${pct}%`,
+                    background: t.status === 'error' || t.status === 'rejected' ? 'var(--red)'
+                      : t.status === 'done' ? 'var(--green)'
+                      : 'var(--accent)'
+                  }}
+                />
+              </div>
+              <div style={styles.stats}>
+                <span>{pct}%</span>
+                {t.status === 'sending' && t.speedBps > 0 && (
+                  <>
+                    <span>{formatSpeed(t.speedBps)}</span>
+                    <span>ETA: {etaSeconds(t.size - t.bytesSent, t.speedBps)}</span>
+                  </>
+                )}
+              </div>
+              {(t.status === 'error' || t.status === 'rejected') && (
+                <p style={styles.errorHint}>
+                  {SEND_ERROR_MESSAGES[t.status] ?? t.errorReason ?? 'Error desconocido.'}
+                </p>
+              )}
+            </div>
+          )
+        })}
+
         {transfers.map((t) => {
           const pct = t.progress
             ? Math.round((t.progress.bytesReceived / t.progress.totalBytes) * 100)
@@ -53,8 +101,9 @@ export default function TransferMonitor({ transfers, onOpenPath }: Props): JSX.E
           return (
             <div key={t.meta.id} style={styles.card}>
               <div style={styles.cardHeader}>
+                <span style={styles.dirLabel}>↓ Recibiendo</span>
                 <span style={styles.filename}>{t.meta.filename}</span>
-                <StatusBadge status={t.status} />
+                <IncomingBadge status={t.status} />
               </div>
               <div style={styles.meta}>
                 <span style={styles.metaItem}>De: {t.meta.senderAlias}</span>
@@ -76,7 +125,7 @@ export default function TransferMonitor({ transfers, onOpenPath }: Props): JSX.E
                 {t.progress && t.status === 'receiving' && (
                   <>
                     <span>{formatSpeed(t.progress.speedBps)}</span>
-                    <span>ETA: {formatEta(t.progress)}</span>
+                    <span>ETA: {etaSeconds(t.progress.totalBytes - t.progress.bytesReceived, t.progress.speedBps)}</span>
                   </>
                 )}
                 {t.status === 'done' && t.savedPath && (
@@ -87,7 +136,7 @@ export default function TransferMonitor({ transfers, onOpenPath }: Props): JSX.E
               </div>
               {t.status === 'error' && (
                 <p style={styles.errorHint}>
-                  {ERROR_MESSAGES[t.errorReason ?? ''] ?? 'Conexión perdida — verificá la red Wi-Fi y reintentá desde el dispositivo emisor.'}
+                  {RECV_ERROR_MESSAGES[t.errorReason ?? ''] ?? 'Conexión perdida — verificá la red Wi-Fi y reintentá desde el dispositivo emisor.'}
                 </p>
               )}
             </div>
@@ -98,21 +147,36 @@ export default function TransferMonitor({ transfers, onOpenPath }: Props): JSX.E
   )
 }
 
-const ERROR_MESSAGES: Record<string, string> = {
+const RECV_ERROR_MESSAGES: Record<string, string> = {
   connection: 'Conexión interrumpida — pedile al remitente que reintente.',
   protocol: 'Error de protocolo — reiniciá el envío desde el móvil.',
 }
 
-function StatusBadge({ status }: { status: ActiveTransfer['status'] }): JSX.Element {
+const SEND_ERROR_MESSAGES: Record<string, string> = {
+  rejected: 'El dispositivo rechazó la transferencia.',
+  error: 'Error de conexión — verificá que el destino esté activo y en la misma red.',
+}
+
+function IncomingBadge({ status }: { status: ActiveTransfer['status'] }): JSX.Element {
   const map = {
     receiving: { color: 'var(--accent)', label: 'Recibiendo' },
     done: { color: 'var(--green)', label: 'Completo' },
     error: { color: 'var(--red)', label: 'Error' }
   }
   const { color, label } = map[status]
-  return (
-    <span style={{ ...styles.statusBadge, background: color }}>{label}</span>
-  )
+  return <span style={{ ...styles.statusBadge, background: color }}>{label}</span>
+}
+
+function OutgoingBadge({ status }: { status: OutgoingTransfer['status'] }): JSX.Element {
+  const map: Record<OutgoingTransfer['status'], { color: string; label: string }> = {
+    waiting: { color: '#f59e0b', label: 'Esperando' },
+    sending: { color: 'var(--accent)', label: 'Enviando' },
+    done: { color: 'var(--green)', label: 'Completo' },
+    rejected: { color: 'var(--red)', label: 'Rechazado' },
+    error: { color: 'var(--red)', label: 'Error' }
+  }
+  const { color, label } = map[status]
+  return <span style={{ ...styles.statusBadge, background: color }}>{label}</span>
 }
 
 const styles: Record<string, React.CSSProperties> = {
@@ -170,15 +234,23 @@ const styles: Record<string, React.CSSProperties> = {
   cardHeader: {
     display: 'flex',
     alignItems: 'center',
-    justifyContent: 'space-between',
     gap: 8
+  },
+  dirLabel: {
+    fontSize: 10,
+    fontWeight: 700,
+    color: 'var(--text-muted)',
+    flexShrink: 0,
+    textTransform: 'uppercase',
+    letterSpacing: '0.05em'
   },
   filename: {
     fontWeight: 600,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
-    flex: 1
+    flex: 1,
+    fontSize: 13
   },
   statusBadge: {
     fontSize: 11,

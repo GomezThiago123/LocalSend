@@ -3,6 +3,8 @@ import type { DiscoveredDevice } from '../../../main/udpServer'
 
 interface Props {
   devices: DiscoveredDevice[]
+  hasPendingFiles?: boolean
+  onDeviceClick?: (device: DiscoveredDevice) => void
 }
 
 const DEVICE_ICONS: Record<DiscoveredDevice['deviceType'], string> = {
@@ -12,7 +14,7 @@ const DEVICE_ICONS: Record<DiscoveredDevice['deviceType'], string> = {
   tablet: '📟'
 }
 
-export default function DeviceList({ devices }: Props): JSX.Element {
+export default function DeviceList({ devices, hasPendingFiles = false, onDeviceClick }: Props): JSX.Element {
   return (
     <section style={styles.section}>
       <h2 style={styles.title}>
@@ -28,18 +30,30 @@ export default function DeviceList({ devices }: Props): JSX.Element {
           </p>
         </div>
       ) : (
-        <ul style={styles.list}>
-          {devices.map((d) => (
-            <li key={d.ip} style={styles.item}>
-              <span style={styles.icon}>{DEVICE_ICONS[d.deviceType] ?? '📡'}</span>
-              <div style={styles.info}>
-                <span style={styles.name}>{d.alias}</span>
-                <span style={styles.ip}>{d.ip}:{d.port}</span>
-              </div>
-              <span style={styles.dot} />
-            </li>
-          ))}
-        </ul>
+        <>
+          {hasPendingFiles && (
+            <p style={styles.sendHint}>Tocá un dispositivo para enviar ↓</p>
+          )}
+          <ul style={styles.list}>
+            {devices.map((d) => (
+              <li
+                key={d.ip}
+                style={{
+                  ...styles.item,
+                  ...(onDeviceClick && hasPendingFiles ? styles.itemClickable : {})
+                }}
+                onClick={() => onDeviceClick?.(d)}
+              >
+                <span style={styles.icon}>{DEVICE_ICONS[d.deviceType] ?? '📡'}</span>
+                <div style={styles.info}>
+                  <span style={styles.name}>{d.alias}</span>
+                  <span style={styles.ip}>{d.ip}:{d.port}</span>
+                </div>
+                <span style={styles.dot} />
+              </li>
+            ))}
+          </ul>
+        </>
       )}
     </section>
   )
@@ -80,6 +94,13 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 8,
     animation: 'pulse 2s infinite'
   },
+  sendHint: {
+    fontSize: 11,
+    color: 'var(--accent)',
+    fontWeight: 600,
+    marginBottom: 8,
+    textAlign: 'center'
+  },
   list: {
     listStyle: 'none',
     display: 'flex',
@@ -93,7 +114,13 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '8px 10px',
     borderRadius: 8,
     background: 'var(--surface2)',
-    cursor: 'default'
+    cursor: 'default',
+    transition: 'background 0.15s, outline 0.15s'
+  },
+  itemClickable: {
+    cursor: 'pointer',
+    outline: '2px solid var(--accent)',
+    outlineOffset: -2
   },
   icon: { fontSize: 20 },
   info: {

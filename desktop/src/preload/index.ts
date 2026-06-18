@@ -57,6 +57,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('transfer:collision', (_, d) => cb(d))
   },
 
+  // Outgoing file send
+  sendFiles: (device: DiscoveredDevice, filePaths: string[]) =>
+    ipcRenderer.invoke('transfer:sendFiles', device, filePaths),
+
+  onSendStart: (cb: (t: Record<string, unknown>) => void) => {
+    ipcRenderer.on('send:start', (_, t) => cb(t))
+  },
+  onSendProgress: (cb: (p: Record<string, unknown>) => void) => {
+    ipcRenderer.on('send:progress', (_, p) => cb(p))
+  },
+  onSendStatus: (cb: (d: { id: string; status: string }) => void) => {
+    ipcRenderer.on('send:status', (_, d) => cb(d))
+  },
+  onSendDone: (cb: (d: { id: string }) => void) => {
+    ipcRenderer.on('send:done', (_, d) => cb(d))
+  },
+  onSendError: (cb: (e: { id: string; reason: string }) => void) => {
+    ipcRenderer.on('send:error', (_, e) => cb(e))
+  },
+
   removeAllListeners: (channel: string) => {
     ipcRenderer.removeAllListeners(channel)
   }

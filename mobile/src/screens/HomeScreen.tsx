@@ -133,14 +133,19 @@ export default function HomeScreen(): React.JSX.Element {
       }
 
       // 3-tap flow: file selected → device tapped → confirm
+      const filesToSend = [...selectedFiles]
       Alert.alert(
         'Enviar archivos',
-        `Enviar ${selectedFiles.length} archivo(s) a "${device.alias}"?`,
+        `Enviar ${filesToSend.length} archivo(s) a "${device.alias}"?`,
         [
           { text: 'Cancelar', style: 'cancel' },
           {
             text: 'Enviar',
-            onPress: () => startTransfer(device, selectedFiles[0])
+            onPress: async () => {
+              for (const file of filesToSend) {
+                await startTransfer(device, file)
+              }
+            }
           }
         ]
       )

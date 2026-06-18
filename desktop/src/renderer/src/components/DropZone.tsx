@@ -1,8 +1,12 @@
 import React, { useState, useCallback } from 'react'
 
-export default function DropZone(): JSX.Element {
+interface Props {
+  files: string[]
+  onFilesChange: (files: string[]) => void
+}
+
+export default function DropZone({ files, onFilesChange }: Props): JSX.Element {
   const [dragging, setDragging] = useState(false)
-  const [files, setFiles] = useState<string[]>([])
 
   const api = (window as any).electronAPI
 
@@ -20,17 +24,17 @@ export default function DropZone(): JSX.Element {
     for (const item of Array.from(e.dataTransfer.files)) {
       paths.push((item as any).path)
     }
-    if (paths.length) setFiles((prev) => [...prev, ...paths])
-  }, [])
+    if (paths.length) onFilesChange([...files, ...paths])
+  }, [files, onFilesChange])
 
   const pickFiles = useCallback(async () => {
     const picked: string[] = await api.pickFiles()
-    if (picked.length) setFiles((prev) => [...prev, ...picked])
-  }, [api])
+    if (picked.length) onFilesChange([...files, ...picked])
+  }, [api, files, onFilesChange])
 
   const removeFile = useCallback((idx: number) => {
-    setFiles((prev) => prev.filter((_, i) => i !== idx))
-  }, [])
+    onFilesChange(files.filter((_, i) => i !== idx))
+  }, [files, onFilesChange])
 
   return (
     <section style={{ ...styles.zone, ...(dragging ? styles.zoneDrag : {}) }}
@@ -43,6 +47,9 @@ export default function DropZone(): JSX.Element {
           <span style={styles.uploadIcon}>⬆</span>
           <span style={{ fontWeight: 600 }}>Arrastrá archivos aquí</span>
           <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>o hacé click para seleccionar</span>
+          <span style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 4 }}>
+            Luego tocá un dispositivo para enviar
+          </span>
         </button>
       ) : (
         <div style={styles.fileList}>
@@ -58,6 +65,7 @@ export default function DropZone(): JSX.Element {
               </li>
             ))}
           </ul>
+          <p style={styles.hint}>Tocá un dispositivo arriba para enviar</p>
         </div>
       )}
     </section>
@@ -153,5 +161,12 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-muted)',
     fontSize: 13,
     flexShrink: 0
+  },
+  hint: {
+    fontSize: 11,
+    color: 'var(--accent)',
+    textAlign: 'center',
+    padding: '8px 16px',
+    borderTop: '1px solid var(--border)'
   }
 }

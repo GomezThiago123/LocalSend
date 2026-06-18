@@ -7,12 +7,15 @@ import {
   shell,
   nativeTheme
 } from 'electron'
-import { join } from 'path'
+import { join, basename } from 'path'
 import { homedir } from 'os'
 import { existsSync, statSync } from 'fs'
+import { v4 as uuidv4 } from 'uuid'
 import Store from 'electron-store'
 import { UdpDiscoveryServer } from './udpServer'
 import { WsTransferServer, WS_PORT } from './wsServer'
+import { WsTransferClient } from './wsClient'
+import type { DiscoveredDevice } from './udpServer'
 
 interface AppConfig {
   alias: string
@@ -171,6 +174,30 @@ ipcMain.handle('transfer:resolveCollision', (_, id: string, choice: 'replace' | 
 })
 
 ipcMain.handle('devices:list', () => udpServer?.getDevices() ?? [])
+
+ipcMain.handle('transfer:sendFiles', async (_, device: DiscoveredDevice, filePaths: string[]) => {
+  const alias = store.get('alias')
+  for (const filePath of filePaths) {
+    const id = uuidv4()
+    const filename = basename(filePath)
+    const { size } = statSync(filePath)
+    mainWindow?.webContents.send('send:start', { id, filename, size, targetAlias: device.alias, targetIp: device.ip, bytesSent: 0, speedBps: 0, status: 'waiting' })
+    const client = new WsTransferClient()
+    client.on('progress', (p) => mainWindow?.webContents.send('send:progress', { id, ...p }))
+    client.on('status', (s) => mainWindow?.webContents.send('send:status', { id, status: s }))
+    try {
+      await client.sendFile(device.ip, device.port, filePath, alias)
+      mainWindow?.webContents.send('send:done', { id })
+      new Notification({
+        title: 'LocalSend — Envío completo',
+        body: `"${filename}" enviado a ${device.alias}`
+      }).show()
+    } catch (err: unknown) {
+      const reason = err instanceof Error ? err.message : 'unknown'
+      mainWindow?.webContents.send('send:error', { id, reason })
+    }
+  }
+})
 
 ipcMain.handle('shell:openPath', (_, filePath: string) => {
   if (existsSync(filePath) && statSync(filePath).isDirectory()) {

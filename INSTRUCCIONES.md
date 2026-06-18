@@ -48,12 +48,15 @@ npm run dev
 
 La ventana de Electron se abre automáticamente. El LED verde en la barra superior indica que el servidor está activo.
 
-### Build para distribución (Windows .exe)
+### Build para distribución
 
 ```bash
 cd desktop
-npm run package
-# Genera: desktop/dist/LocalSend Setup x.x.x.exe
+npm install
+npx electron-vite build        # compila TypeScript + Vite
+npx electron-builder --linux   # genera .AppImage (Linux)
+npx electron-builder --win     # genera .exe (Windows, requiere Wine en Linux)
+# Binario generado en: desktop/dist/LocalSend-1.0.0.AppImage
 ```
 
 ---
@@ -77,8 +80,8 @@ Escaneá el QR con la app **Expo Go** (disponible en Play Store).
 ```bash
 cd mobile
 npm install
-eas login           # requiere cuenta en expo.dev (gratuita)
-eas build -p android --profile preview
+eas login                                      # requiere cuenta en expo.dev (gratuita)
+eas build -p android --profile preview         # genera APK en la nube (~10 min)
 ```
 
 Una vez completado, EAS te da un link para descargar el `.apk`. Instalalo en el celular con:
@@ -93,14 +96,22 @@ O transferí el APK al celular y abrilo desde el administrador de archivos (habi
 
 ## 4. Flujo de Transferencia
 
-### PC → Celular *(Próximamente — actualmente solo Mobile → Desktop)*
+### Mobile → Desktop
 
 1. La app Desktop aparece en el radar del celular (≤5 segundos).
 2. Seleccioná uno o más archivos en la app móvil (botón "Galería" o "Archivos").
 3. Tocá el ícono de la PC en el radar.
 4. Confirmá "Enviar".
 5. En la PC aparece el diálogo "Aceptar / Rechazar".
-6. Al aceptar, el archivo se guarda en la carpeta de Descargas configurada.
+6. Al aceptar, el/los archivo(s) se guardan en la carpeta de Descargas configurada.
+
+### Desktop → otro dispositivo Desktop
+
+1. Arrastrá archivos al panel inferior izquierdo de la app Desktop (o hacé click para seleccionar).
+2. Los dispositivos detectados en la lista se resaltan con borde azul.
+3. Hacé click en el dispositivo destino → confirmá en el diálogo.
+4. El panel derecho "Transferencias" muestra el progreso en tiempo real (↑ Enviando / ↓ Recibiendo).
+5. Al completar, aparece una notificación nativa del sistema.
 
 ### Resolución de nombres de archivo duplicados
 

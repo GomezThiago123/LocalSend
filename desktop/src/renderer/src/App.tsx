@@ -16,13 +16,27 @@ export interface ActiveTransfer {
   errorReason?: string
 }
 
+export interface OutgoingTransfer {
+  id: string
+  filename: string
+  size: number
+  targetAlias: string
+  targetIp: string
+  bytesSent: number
+  speedBps: number
+  status: 'waiting' | 'sending' | 'done' | 'rejected' | 'error'
+  errorReason?: string
+}
+
 export default function App(): JSX.Element {
   const [devices, setDevices] = useState<DiscoveredDevice[]>([])
   const [transfers, setTransfers] = useState<Map<string, ActiveTransfer>>(new Map())
+  const [outgoing, setOutgoing] = useState<Map<string, OutgoingTransfer>>(new Map())
   const [pendingRequest, setPendingRequest] = useState<TransferMetadata | null>(null)
   const [pendingCollision, setPendingCollision] = useState<{ id: string; filename: string } | null>(null)
   const [config, setConfig] = useState({ alias: '', downloadDir: '', localIp: '' })
   const [serverActive, setServerActive] = useState(false)
+  const [filesToSend, setFilesToSend] = useState<string[]>([])
 
   const api = (window as any).electronAPI
 
@@ -49,6 +63,7 @@ export default function App(): JSX.Element {
       setDevices((prev) => prev.filter((x) => x.ip !== ip))
     })
 
+    // Incoming transfers
     api.onTransferRequest((meta: TransferMetadata) => {
       setPendingRequest(meta)
     })
@@ -91,13 +106,55 @@ export default function App(): JSX.Element {
       })
     })
 
+    // Outgoing transfers (desktop → device)
+    api.onSendStart((t: OutgoingTransfer) => {
+      setOutgoing((prev) => {
+        const next = new Map(prev)
+        next.set(t.id, t)
+        return next
+      })
+    })
+    api.onSendProgress((p: { id: string; bytesSent: number; totalBytes: number; speedBps: number }) => {
+      setOutgoing((prev) => {
+        const next = new Map(prev)
+        const t = next.get(p.id)
+        if (t) next.set(p.id, { ...t, bytesSent: p.bytesSent, size: p.totalBytes, speedBps: p.speedBps, status: 'sending' })
+        return next
+      })
+    })
+    api.onSendStatus((d: { id: string; status: OutgoingTransfer['status'] }) => {
+      setOutgoing((prev) => {
+        const next = new Map(prev)
+        const t = next.get(d.id)
+        if (t) next.set(d.id, { ...t, status: d.status })
+        return next
+      })
+    })
+    api.onSendDone((d: { id: string }) => {
+      setOutgoing((prev) => {
+        const next = new Map(prev)
+        const t = next.get(d.id)
+        if (t) next.set(d.id, { ...t, status: 'done', bytesSent: t.size })
+        return next
+      })
+    })
+    api.onSendError((e: { id: string; reason: string }) => {
+      setOutgoing((prev) => {
+        const next = new Map(prev)
+        const t = next.get(e.id)
+        if (t) next.set(e.id, { ...t, status: 'error', errorReason: e.reason })
+        return next
+      })
+    })
+
     return () => {
       const channels = [
         'device:found', 'device:updated', 'device:lost',
         'transfer:request', 'transfer:start', 'transfer:progress',
-        'transfer:done', 'transfer:error', 'transfer:decision'
+        'transfer:done', 'transfer:error', 'transfer:decision',
+        'transfer:collision',
+        'send:start', 'send:progress', 'send:status', 'send:done', 'send:error'
       ]
-      channels.push('transfer:collision')
       channels.forEach((ch) => api.removeAllListeners(ch))
     }
   }, [])
@@ -131,7 +188,22 @@ export default function App(): JSX.Element {
     if (dir) setConfig((c) => ({ ...c, downloadDir: dir }))
   }, [api])
 
+  const handleDeviceClick = useCallback(
+    (device: DiscoveredDevice) => {
+      if (filesToSend.length === 0) return
+      const label =
+        filesToSend.length === 1
+          ? `"${filesToSend[0].split(/[\\/]/).pop()}"`
+          : `${filesToSend.length} archivos`
+      if (!window.confirm(`¿Enviar ${label} a "${device.alias}"?`)) return
+      api.sendFiles(device, filesToSend)
+      setFilesToSend([])
+    },
+    [filesToSend, api]
+  )
+
   const transferList = Array.from(transfers.values())
+  const outgoingList = Array.from(outgoing.values())
 
   return (
     <div style={styles.layout}>
@@ -146,11 +218,19 @@ export default function App(): JSX.Element {
       />
       <main style={styles.main}>
         <div style={styles.left}>
-          <DeviceList devices={devices} />
-          <DropZone />
+          <DeviceList
+            devices={devices}
+            hasPendingFiles={filesToSend.length > 0}
+            onDeviceClick={handleDeviceClick}
+          />
+          <DropZone files={filesToSend} onFilesChange={setFilesToSend} />
         </div>
         <div style={styles.right}>
-          <TransferMonitor transfers={transferList} onOpenPath={(p) => api.openPath(p)} />
+          <TransferMonitor
+            transfers={transferList}
+            outgoing={outgoingList}
+            onOpenPath={(p) => api.openPath(p)}
+          />
         </div>
       </main>
       {pendingRequest && (
