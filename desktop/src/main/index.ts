@@ -29,6 +29,16 @@ const store = new Store<AppConfig>({
   }
 })
 
+// El default de arriba asume inglés; en locales no-inglés (ej. "Descargas" en
+// español) esa carpeta no existe. app.getPath resuelve el nombre real vía XDG/SO.
+function resolveDownloadDir(): string {
+  const configured = store.get('downloadDir')
+  if (existsSync(configured)) return configured
+  const systemDownloads = app.getPath('downloads')
+  store.set('downloadDir', systemDownloads)
+  return systemDownloads
+}
+
 let mainWindow: BrowserWindow | null = null
 let udpServer: UdpDiscoveryServer | null = null
 let wsServer: WsTransferServer | null = null
@@ -63,7 +73,7 @@ function createWindow(): void {
 
 async function startServers(): Promise<void> {
   const alias = store.get('alias')
-  const downloadDir = store.get('downloadDir')
+  const downloadDir = resolveDownloadDir()
 
   wsServer = new WsTransferServer(downloadDir)
   wsServer.setAlias(alias)

@@ -165,6 +165,7 @@ export class WsTransferServer extends EventEmitter {
               destPath = baseDest
             }
 
+            fs.mkdirSync(this.downloadDir, { recursive: true })
             transfer!.writeStream = fs.createWriteStream(destPath)
             transfer!.state = 'receiving'
             transfer!.startTime = Date.now()
@@ -186,6 +187,10 @@ export class WsTransferServer extends EventEmitter {
               totalBytes: transfer.meta.size,
               speedBps: transfer.bytesReceived / elapsed
             } as TransferProgress)
+
+            // Backpressure: el remitente espera este ack antes de mandar el próximo
+            // chunk, para no saturar el puente nativo ni desincronizar el progreso.
+            ws.send(JSON.stringify({ type: 'chunkAck' }))
 
           } else if (msg.type === 'done') {
             if (transfer?.state === 'receiving') {

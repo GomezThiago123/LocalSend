@@ -24,6 +24,7 @@ export type TransferStatus = 'connecting' | 'waiting' | 'rejected' | 'sending' |
 export class TransferClient extends EventEmitter {
   private ws: WebSocket | null = null
   private status: TransferStatus = 'connecting'
+  private pendingChunkAck: { resolve: () => void; reject: (err: Error) => void } | null = null
 
   async send(opts: TransferOptions): Promise<void> {
     const url = `ws://${opts.deviceIp}:${opts.devicePort}`
@@ -66,6 +67,10 @@ export class TransferClient extends EventEmitter {
             await this.streamFile(opts, ws)
             ws.send(JSON.stringify({ type: 'done' }))
 
+          } else if (msg.type === 'chunkAck') {
+            this.pendingChunkAck?.resolve()
+            this.pendingChunkAck = null
+
           } else if (msg.type === 'ack') {
             this.status = 'done'
             this.emit('status', this.status)
@@ -82,6 +87,8 @@ export class TransferClient extends EventEmitter {
       ws.onerror = () => {
         this.status = 'error'
         this.emit('status', this.status)
+        this.pendingChunkAck?.reject(new Error('WebSocket error'))
+        this.pendingChunkAck = null
         settle(() => reject(new Error('WebSocket error')))
       }
 
@@ -89,6 +96,8 @@ export class TransferClient extends EventEmitter {
         if (this.status !== 'done' && this.status !== 'rejected') {
           this.status = 'error'
           this.emit('status', this.status)
+          this.pendingChunkAck?.reject(new Error('Conexión cerrada inesperadamente'))
+          this.pendingChunkAck = null
           settle(() => reject(new Error('Conexión cerrada inesperadamente')))
         }
       }
@@ -117,6 +126,11 @@ export class TransferClient extends EventEmitter {
       // Enviamos el chunk como JSON base64 — compatible con Expo Go
       ws.send(JSON.stringify({ type: 'chunk', data: chunkB64 }))
 
+      // Backpressure: RN no expone bufferedAmount real, así que esperamos el ack
+      // del receptor antes de mandar el siguiente chunk. Sin esto, ws.send() encola
+      // todo de golpe y termina cortando la conexión en archivos grandes.
+      await new Promise<void>((res, rej) => { this.pendingChunkAck = { resolve: res, reject: rej } })
+
       offset += length
 
       const elapsed = (Date.now() - startTime) / 1000 || 0.001
@@ -125,9 +139,6 @@ export class TransferClient extends EventEmitter {
         totalBytes: size,
         speedBps: offset / elapsed
       } as TransferProgress)
-
-      // Cede el hilo para que la UI no se congele
-      await new Promise<void>((r) => setTimeout(() => r(), 1))
     }
   }
 
