@@ -192,11 +192,20 @@ ipcMain.handle('transfer:sendFiles', async (_, device: DiscoveredDevice, filePat
     const filename = basename(filePath)
     const { size } = statSync(filePath)
     mainWindow?.webContents.send('send:start', { id, filename, size, targetAlias: device.alias, targetIp: device.ip, bytesSent: 0, speedBps: 0, status: 'waiting' })
-    const client = new WsTransferClient()
-    client.on('progress', (p) => mainWindow?.webContents.send('send:progress', { id, ...p }))
-    client.on('status', (s) => mainWindow?.webContents.send('send:status', { id, status: s }))
     try {
-      await client.sendFile(device.ip, device.port, filePath, alias)
+      if (device.deviceType === 'mobile') {
+        if (!wsServer) throw new Error('El servidor no está listo todavía')
+        // El móvil no corre un servidor propio: reutilizamos la conexión
+        // persistente que él mismo registró (ver wsServer.pushFile).
+        await wsServer.pushFile(device.ip, filePath, alias, (p) => {
+          mainWindow?.webContents.send('send:progress', { id, ...p })
+        })
+      } else {
+        const client = new WsTransferClient()
+        client.on('progress', (p) => mainWindow?.webContents.send('send:progress', { id, ...p }))
+        client.on('status', (s) => mainWindow?.webContents.send('send:status', { id, status: s }))
+        await client.sendFile(device.ip, device.port, filePath, alias)
+      }
       mainWindow?.webContents.send('send:done', { id })
       new Notification({
         title: 'LocalSend — Envío completo',

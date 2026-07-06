@@ -11,6 +11,7 @@ interface Props {
   progress: TransferProgress | null
   onClose: () => void
   onRetry?: () => void
+  direction?: 'send' | 'receive'
 }
 
 function formatBytes(bytes: number): string {
@@ -35,12 +36,13 @@ const STATUS_LABELS: Record<TransferStatus, string> = {
   waiting: 'Esperando aprobación...',
   rejected: 'Transferencia rechazada',
   sending: 'Enviando...',
+  receiving: 'Recibiendo...',
   done: 'Completado',
   error: 'Error de conexión'
 }
 
 export default function TransferProgressModal({
-  visible, deviceAlias, filename, thumbnail, status, progress, onClose, onRetry
+  visible, deviceAlias, filename, thumbnail, status, progress, onClose, onRetry, direction = 'send'
 }: Props): React.JSX.Element {
   const barWidth = useRef(new Animated.Value(0)).current
 
@@ -63,7 +65,7 @@ export default function TransferProgressModal({
       <View style={styles.overlay}>
         <View style={styles.sheet}>
           <Text style={styles.title}>{STATUS_LABELS[status]}</Text>
-          <Text style={styles.device}>→ {deviceAlias}</Text>
+          <Text style={styles.device}>{direction === 'receive' ? '←' : '→'} {deviceAlias}</Text>
           <Text style={styles.filename} numberOfLines={1}>{filename}</Text>
 
           {thumbnail ? (
@@ -85,7 +87,7 @@ export default function TransferProgressModal({
 
           <View style={styles.stats}>
             <Text style={styles.pct}>{Math.round(pct * 100)}%</Text>
-            {progress && status === 'sending' && (
+            {progress && (status === 'sending' || status === 'receiving') && (
               <>
                 <Text style={styles.stat}>{formatSpeed(progress.speedBps)}</Text>
                 <Text style={styles.stat}>ETA {formatEta(progress)}</Text>

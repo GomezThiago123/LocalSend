@@ -16,6 +16,7 @@ import * as Haptics from 'expo-haptics'
 import * as Network from 'expo-network'
 import { DiscoveryService, type DiscoveredDevice } from '../services/discovery'
 import { TransferClient, type TransferProgress, type TransferStatus } from '../services/transfer'
+import { ReceiverService, type IncomingTransferMeta } from '../services/receiver'
 import { getOrCreateAlias } from '../services/deviceAlias'
 import { requestMediaPermission } from '../services/permissions'
 import { setupNotificationChannel, startForegroundTask, stopForegroundTask } from '../services/foregroundTask'
@@ -38,7 +39,13 @@ export default function HomeScreen(): React.JSX.Element {
   const [transferStatus, setTransferStatus] = useState<TransferStatus>('connecting')
   const [transferProgress, setTransferProgress] = useState<TransferProgress | null>(null)
 
+  const [incomingModal, setIncomingModal] = useState(false)
+  const [incomingMeta, setIncomingMeta] = useState<IncomingTransferMeta | null>(null)
+  const [incomingStatus, setIncomingStatus] = useState<TransferStatus>('receiving')
+  const [incomingProgress, setIncomingProgress] = useState<TransferProgress | null>(null)
+
   const discoveryRef = useRef<DiscoveryService | null>(null)
+  const receiverRef = useRef<ReceiverService | null>(null)
 
   useEffect(() => {
     let mounted = true
@@ -52,10 +59,47 @@ export default function HomeScreen(): React.JSX.Element {
       const discovery = new DiscoveryService(a)
       discoveryRef.current = discovery
 
+      const receiver = new ReceiverService(a)
+      receiverRef.current = receiver
+
+      // El desktop pide permiso para enviarnos un archivo sobre la conexión
+      // persistente que abrimos al descubrirlo (ver receiver.ts).
+      receiver.on('transferRequest', (meta: IncomingTransferMeta) => {
+        if (!mounted) return
+        const sizeMb = (meta.size / (1024 * 1024)).toFixed(1)
+        Alert.alert(
+          'Archivo entrante',
+          `${meta.senderAlias} quiere enviarte "${meta.filename}" (${sizeMb} MB)`,
+          [
+            { text: 'Rechazar', style: 'cancel', onPress: () => receiver.decide(false) },
+            { text: 'Aceptar', onPress: () => receiver.decide(true) }
+          ]
+        )
+      })
+      receiver.on('start', (meta: IncomingTransferMeta) => {
+        if (!mounted) return
+        setIncomingMeta(meta)
+        setIncomingStatus('receiving')
+        setIncomingProgress(null)
+        setIncomingModal(true)
+      })
+      receiver.on('progress', (p: TransferProgress) => {
+        if (!mounted) return
+        setIncomingProgress(p)
+      })
+      receiver.on('done', async () => {
+        if (!mounted) return
+        setIncomingStatus('done')
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+      })
+
       discovery.on('deviceFound', (d: DiscoveredDevice) => {
         if (!mounted) return
         setDevices((prev) => (prev.find((x) => x.ip === d.ip) ? prev : [...prev, d]))
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+        if (d.deviceType === 'desktop' || d.deviceType === 'laptop') {
+          receiver.connectTo(d.ip, d.port)
+        }
       })
       discovery.on('deviceUpdated', (d: DiscoveredDevice) => {
         if (!mounted) return
@@ -64,6 +108,7 @@ export default function HomeScreen(): React.JSX.Element {
       discovery.on('deviceLost', (ip: string) => {
         if (!mounted) return
         setDevices((prev) => prev.filter((x) => x.ip !== ip))
+        receiver.disconnectFrom(ip)
       })
 
       try {
@@ -87,6 +132,7 @@ export default function HomeScreen(): React.JSX.Element {
     return () => {
       mounted = false
       discoveryRef.current?.stop()
+      receiverRef.current?.stop()
       clearInterval(wifiTimer)
     }
   }, [])
@@ -269,6 +315,18 @@ export default function HomeScreen(): React.JSX.Element {
             setTransferModal(false)
             setTimeout(() => startTransfer(transferDevice, transferFile), 300)
           }}
+        />
+      )}
+
+      {incomingModal && incomingMeta && (
+        <TransferProgressModal
+          visible={incomingModal}
+          direction="receive"
+          deviceAlias={incomingMeta.senderAlias}
+          filename={incomingMeta.filename}
+          status={incomingStatus}
+          progress={incomingProgress}
+          onClose={() => setIncomingModal(false)}
         />
       )}
     </SafeAreaView>

@@ -19,7 +19,7 @@ export interface TransferProgress {
   speedBps: number
 }
 
-export type TransferStatus = 'connecting' | 'waiting' | 'rejected' | 'sending' | 'done' | 'error'
+export type TransferStatus = 'connecting' | 'waiting' | 'rejected' | 'sending' | 'receiving' | 'done' | 'error'
 
 export class TransferClient extends EventEmitter {
   private ws: WebSocket | null = null

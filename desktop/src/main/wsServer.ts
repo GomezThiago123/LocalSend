@@ -35,11 +35,37 @@ interface ActiveTransfer {
   resolve: (accepted: boolean) => void
 }
 
+const PUSH_CHUNK_BYTES = 48 * 1024 // mismo tamaño que usa el móvil al enviar, por consistencia
+
+interface PushWaiter<T = void> {
+  resolve: (v: T) => void
+  reject: (err: Error) => void
+}
+
+interface PushWaiters {
+  decision?: PushWaiter<boolean>
+  chunkAck?: PushWaiter
+  finalAck?: PushWaiter
+}
+
+export interface PushProgress {
+  bytesSent: number
+  totalBytes: number
+  speedBps: number
+}
+
 export class WsTransferServer extends EventEmitter {
   private httpServer: http.Server
   private wss: WebSocketServer
   private downloadDir: string
   private pendingDecisions = new Map<string, ActiveTransfer>()
+
+  // Conexiones WebSocket persistentes que un móvil abre para poder recibir
+  // archivos (Desktop→Mobile). El móvil no puede correr un servidor propio
+  // dentro de Expo Go, así que en su lugar mantiene abierta la conexión que
+  // él mismo inició y la usamos en ambos sentidos.
+  private receivers = new Map<string, WebSocket>()
+  private pushWaiters = new Map<string, PushWaiters>()
 
   constructor(downloadDir: string) {
     super()
@@ -112,7 +138,23 @@ export class WsTransferServer extends EventEmitter {
         try {
           const msg = JSON.parse(data.toString())
 
-          if (msg.type === 'metadata') {
+          if (msg.type === 'register') {
+            // El móvil se anuncia como receptor: guardamos esta conexión para
+            // poder empujarle archivos más adelante (Desktop→Mobile).
+            this.receivers.set(senderIp, ws)
+            ws.send(JSON.stringify({ type: 'registered' }))
+
+          } else if (msg.type === 'decision' && this.pushWaiters.has(senderIp)) {
+            // Respuesta del móvil a un envío que nosotros iniciamos
+            this.pushWaiters.get(senderIp)?.decision?.resolve(msg.accepted)
+
+          } else if (msg.type === 'chunkAck' && this.pushWaiters.has(senderIp)) {
+            this.pushWaiters.get(senderIp)?.chunkAck?.resolve()
+
+          } else if (msg.type === 'ack' && this.pushWaiters.has(senderIp)) {
+            this.pushWaiters.get(senderIp)?.finalAck?.resolve()
+
+          } else if (msg.type === 'metadata') {
             const id = uuidv4()
             const meta: TransferMetadata = {
               id,
@@ -213,7 +255,20 @@ export class WsTransferServer extends EventEmitter {
       // binary frames kept for future desktop↔desktop transfers
     })
 
+    const cleanupPushSession = (): void => {
+      if (this.receivers.get(senderIp) === ws) this.receivers.delete(senderIp)
+      const waiters = this.pushWaiters.get(senderIp)
+      if (waiters) {
+        const err = new Error('Conexión con el móvil interrumpida')
+        waiters.decision?.reject(err)
+        waiters.chunkAck?.reject(err)
+        waiters.finalAck?.reject(err)
+        this.pushWaiters.delete(senderIp)
+      }
+    }
+
     ws.on('error', () => {
+      cleanupPushSession()
       if (transfer?.state === 'receiving') {
         transfer.writeStream?.destroy()
         this.emit('transferError', { id: transfer.meta.id, reason: 'connection' })
@@ -222,12 +277,77 @@ export class WsTransferServer extends EventEmitter {
     })
 
     ws.on('close', () => {
+      cleanupPushSession()
       if (transfer?.state === 'receiving') {
         transfer.writeStream?.destroy()
         this.emit('transferError', { id: transfer.meta.id, reason: 'connection' })
         this.pendingDecisions.delete(transfer.meta.id)
       }
     })
+  }
+
+  // Envía un archivo a un móvil ya registrado como receptor (ver msg.type === 'register').
+  // Reutiliza el mismo protocolo JSON (metadata/decision/chunk/chunkAck/done/ack) que
+  // usa el móvil para enviar, pero con los roles invertidos sobre la misma conexión.
+  async pushFile(
+    ip: string,
+    filePath: string,
+    senderAlias: string,
+    onProgress: (p: PushProgress) => void
+  ): Promise<void> {
+    const ws = this.receivers.get(ip)
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      throw new Error('El dispositivo móvil no tiene una conexión activa para recibir archivos')
+    }
+
+    const filename = path.basename(filePath)
+    const { size } = fs.statSync(filePath)
+    const startTime = Date.now()
+
+    const accepted = await new Promise<boolean>((resolve, reject) => {
+      this.pushWaiters.set(ip, { decision: { resolve, reject } })
+      ws.send(JSON.stringify({ type: 'metadata', filename, size, mime: 'application/octet-stream', senderAlias }))
+    })
+
+    if (!accepted) {
+      this.pushWaiters.delete(ip)
+      throw new Error('rejected')
+    }
+
+    const fd = fs.openSync(filePath, 'r')
+    try {
+      const buffer = Buffer.alloc(PUSH_CHUNK_BYTES)
+      let offset = 0
+      while (offset < size) {
+        const bytesToRead = Math.min(PUSH_CHUNK_BYTES, size - offset)
+        const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, offset)
+        const chunkB64 = buffer.subarray(0, bytesRead).toString('base64')
+
+        ws.send(JSON.stringify({ type: 'chunk', data: chunkB64 }))
+
+        // Backpressure: esperamos el chunkAck del móvil antes de seguir (mismo
+        // mecanismo que usa el móvil al enviarnos archivos a nosotros).
+        await new Promise<void>((resolve, reject) => {
+          const waiters = this.pushWaiters.get(ip) ?? {}
+          waiters.chunkAck = { resolve, reject }
+          this.pushWaiters.set(ip, waiters)
+        })
+
+        offset += bytesRead
+        const elapsed = (Date.now() - startTime) / 1000 || 0.001
+        onProgress({ bytesSent: offset, totalBytes: size, speedBps: offset / elapsed })
+      }
+
+      ws.send(JSON.stringify({ type: 'done' }))
+      await new Promise<void>((resolve, reject) => {
+        const waiters = this.pushWaiters.get(ip) ?? {}
+        waiters.finalAck = { resolve, reject }
+        this.pushWaiters.set(ip, waiters)
+      })
+    } finally {
+      fs.closeSync(fd)
+      this.pushWaiters.delete(ip)
+    }
   }
 
   private resolveDestPath(filename: string): string {
