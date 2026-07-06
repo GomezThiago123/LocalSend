@@ -33,9 +33,16 @@
       "bundleIdentifier": "com.localsend.mobile",
       "infoPlist": {
         "NSLocalNetworkUsageDescription": "LocalSend necesita acceso a la red local para descubrir dispositivos cercanos.",
-        "NSBonjourServices": ["_localsend._tcp"]
+        "NSBonjourServices": [
+          "_localsend._tcp"
+        ]
       }
     },
-    "scheme": "localsend"
+    "scheme": "localsend",
+    "extra": {
+      "eas": {
+        "projectId": "cbccbb1e-6b90-48c6-92f0-0a7e575bf02f"
+      }
+    }
   }
 }
