@@ -63,7 +63,7 @@ export class WsTransferClient extends EventEmitter {
       })
 
       ws.on('error', (err) => settle(() => reject(err)))
-      ws.on('close', () => settle(() => reject(new Error('connection closed unexpectedly'))))
+      ws.on('close', () => settle(() => reject(new Error('Se perdió la conexión con el dispositivo.'))))
     })
   }
 
@@ -73,7 +73,7 @@ export class WsTransferClient extends EventEmitter {
     const startTime = Date.now()
 
     for await (const rawChunk of stream) {
-      if (ws.readyState !== WebSocket.OPEN) throw new Error('connection closed during transfer')
+      if (ws.readyState !== WebSocket.OPEN) throw new Error('Se perdió la conexión con el dispositivo.')
       const chunk = rawChunk as Buffer
       ws.send(JSON.stringify({ type: 'chunk', data: chunk.toString('base64') }))
       bytesSent += chunk.byteLength

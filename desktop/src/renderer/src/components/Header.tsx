@@ -4,6 +4,7 @@ interface Props {
   alias: string
   localIp: string
   serverActive: boolean
+  online: boolean
   downloadDir: string
   onAliasChange: (alias: string) => void
   onPickDownloadDir: () => void
@@ -14,6 +15,7 @@ export default function Header({
   alias,
   localIp,
   serverActive,
+  online,
   downloadDir,
   onAliasChange,
   onPickDownloadDir,
@@ -49,8 +51,10 @@ export default function Header({
         <span style={styles.ip}>{localIp}</span>
       </div>
       <div style={styles.right}>
-        <span style={{ ...styles.led, background: serverActive ? 'var(--green)' : 'var(--red)' }} />
-        <span style={styles.ledLabel}>{serverActive ? 'Activo' : 'Inactivo'}</span>
+        <span style={{ ...styles.led, background: serverActive && online ? 'var(--green)' : 'var(--red)' }} />
+        <span style={styles.ledLabel}>
+          {!online ? 'Sin conexión' : serverActive ? 'Activo' : 'Inactivo'}
+        </span>
         <button
           style={styles.dirBtn}
           onClick={onOpenDownloadDir}
