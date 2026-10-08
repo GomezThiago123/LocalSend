@@ -2,6 +2,18 @@ import { EventEmitter } from 'eventemitter3'
 import { readAsStringAsync, copyAsync, cacheDirectory, EncodingType } from 'expo-file-system/legacy'
 
 const CHUNK_BYTES = 48 * 1024 // 48 KB por chunk
+// Si se corta el Wi-Fi el socket puede quedar mudo sin disparar onclose:
+// sin respuesta en este tiempo damos el envío por fallido.
+const CONNECT_TIMEOUT_MS = 10000
+const ACK_TIMEOUT_MS = 15000
+
+// Motivo de un corte, usado como message del Error. La pantalla lo traduce a un
+// texto ("este celular se quedó sin Wi-Fi" vs "la PC se quedó sin Wi-Fi").
+//  - 'peer-offline':  la PC dejó de responder (se quedó sin red)
+//  - 'closed':        la conexión se cerró (la PC cerró la app, o nos quedamos sin red)
+//  - 'local-offline': este celular perdió el Wi-Fi
+//  - 'connect':       no se pudo conectar con la PC
+export type LinkLoss = 'peer-offline' | 'closed' | 'local-offline' | 'connect'
 
 export interface TransferOptions {
   deviceIp: string
@@ -25,8 +37,11 @@ export class TransferClient extends EventEmitter {
   private ws: WebSocket | null = null
   private status: TransferStatus = 'connecting'
   private pendingChunkAck: { resolve: () => void; reject: (err: Error) => void } | null = null
+  private abort: ((err: Error) => void) | null = null
+  private target: string | null = null
 
   async send(opts: TransferOptions): Promise<void> {
+    this.target = opts.deviceIp
     const url = `ws://${opts.deviceIp}:${opts.devicePort}`
     this.ws = new WebSocket(url)
     this.status = 'connecting'
@@ -35,8 +50,26 @@ export class TransferClient extends EventEmitter {
       const ws = this.ws!
       let settled = false
       const settle = (fn: () => void) => {
-        if (!settled) { settled = true; fn() }
+        if (!settled) { settled = true; clearTimeout(connectTimer); fn() }
       }
+
+      // Permite que cancel() haga fallar el envío al instante, sin esperar a
+      // que llegue onclose (que con el Wi-Fi caído puede tardar mucho).
+      this.abort = (err) => {
+        this.status = 'error'
+        this.emit('status', this.status)
+        this.pendingChunkAck?.reject(err)
+        this.pendingChunkAck = null
+        settle(() => reject(err))
+      }
+
+      const connectTimer = setTimeout(() => {
+        if (this.status !== 'connecting') return
+        this.status = 'error'
+        this.emit('status', this.status)
+        ws.close()
+        settle(() => reject(new Error('connect' satisfies LinkLoss)))
+      }, CONNECT_TIMEOUT_MS)
 
       ws.onopen = () => {
         this.status = 'waiting'
@@ -87,18 +120,18 @@ export class TransferClient extends EventEmitter {
       ws.onerror = () => {
         this.status = 'error'
         this.emit('status', this.status)
-        this.pendingChunkAck?.reject(new Error('WebSocket error'))
+        this.pendingChunkAck?.reject(new Error('closed' satisfies LinkLoss))
         this.pendingChunkAck = null
-        settle(() => reject(new Error('WebSocket error')))
+        settle(() => reject(new Error('closed' satisfies LinkLoss)))
       }
 
       ws.onclose = () => {
         if (this.status !== 'done' && this.status !== 'rejected') {
           this.status = 'error'
           this.emit('status', this.status)
-          this.pendingChunkAck?.reject(new Error('Conexión cerrada inesperadamente'))
+          this.pendingChunkAck?.reject(new Error('closed' satisfies LinkLoss))
           this.pendingChunkAck = null
-          settle(() => reject(new Error('Conexión cerrada inesperadamente')))
+          settle(() => reject(new Error('closed' satisfies LinkLoss)))
         }
       }
     })
@@ -129,7 +162,14 @@ export class TransferClient extends EventEmitter {
       // Backpressure: RN no expone bufferedAmount real, así que esperamos el ack
       // del receptor antes de mandar el siguiente chunk. Sin esto, ws.send() encola
       // todo de golpe y termina cortando la conexión en archivos grandes.
-      await new Promise<void>((res, rej) => { this.pendingChunkAck = { resolve: res, reject: rej } })
+      await new Promise<void>((res, rej) => {
+        // La PC no confirmó el chunk a tiempo: dejó de responder
+        const timer = setTimeout(() => this.cancel('peer-offline'), ACK_TIMEOUT_MS)
+        this.pendingChunkAck = {
+          resolve: () => { clearTimeout(timer); res() },
+          reject: (err) => { clearTimeout(timer); rej(err) }
+        }
+      })
 
       offset += length
 
@@ -151,8 +191,12 @@ export class TransferClient extends EventEmitter {
     return dest
   }
 
-  cancel(): void {
+  get targetIp(): string | null {
+    return this.target
+  }
+
+  cancel(reason: LinkLoss): void {
+    this.abort?.(new Error(reason))
     this.ws?.close()
-    this.status = 'error'
   }
 }

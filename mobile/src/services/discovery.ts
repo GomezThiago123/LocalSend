@@ -6,6 +6,10 @@ const SCAN_INTERVAL_MS = 5000
 const PROBE_TIMEOUT_MS = 800
 const PROBE_BATCH = 25
 const HEALTH_INTERVAL_MS = 4000
+// En el chequeo de salud somos más tolerantes que en el escaneo: una red lenta
+// o la PC ocupada en una transferencia no deben hacerla "desaparecer".
+const HEALTH_PROBE_TIMEOUT_MS = 2000
+const HEALTH_MAX_MISSES = 2
 
 export interface DiscoveredDevice {
   alias: string
@@ -23,6 +27,7 @@ interface DeviceInfo {
 
 export class DiscoveryService extends EventEmitter {
   private devices = new Map<string, DiscoveredDevice>()
+  private misses = new Map<string, number>()
   private scanTimer: ReturnType<typeof setInterval> | null = null
   private healthTimer: ReturnType<typeof setInterval> | null = null
   private scanning = false
@@ -50,9 +55,9 @@ export class DiscoveryService extends EventEmitter {
     }
   }
 
-  private async probeIp(ip: string): Promise<DiscoveredDevice | null> {
+  private async probeIp(ip: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<DiscoveredDevice | null> {
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS)
+    const timeout = setTimeout(() => controller.abort(), timeoutMs)
     try {
       const res = await fetch(`http://${ip}:${WS_PORT}/info`, { signal: controller.signal })
       if (!res.ok) return null
@@ -126,11 +131,16 @@ export class DiscoveryService extends EventEmitter {
 
   private async healthCheck(): Promise<void> {
     for (const [ip, device] of this.devices) {
-      const alive = await this.probeIp(ip)
+      const alive = await this.probeIp(ip, HEALTH_PROBE_TIMEOUT_MS)
       if (!alive) {
+        const misses = (this.misses.get(ip) ?? 0) + 1
+        this.misses.set(ip, misses)
+        if (misses < HEALTH_MAX_MISSES) continue
+        this.misses.delete(ip)
         this.devices.delete(ip)
-        this.emit('deviceLost', ip)
+        this.emit('deviceLost', ip, device)
       } else {
+        this.misses.delete(ip)
         this.devices.set(ip, { ...device, lastSeen: Date.now() })
         await this.registerWith(ip) // keep desktop's TTL alive
       }

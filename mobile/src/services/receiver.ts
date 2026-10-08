@@ -1,8 +1,11 @@
 import { EventEmitter } from 'eventemitter3'
 import { File, Paths } from 'expo-file-system'
-import type { TransferProgress } from './transfer'
+import type { TransferProgress, LinkLoss } from './transfer'
 
 const RECONNECT_DELAY_MS = 4000
+// Si se corta el Wi-Fi, el socket puede quedar abierto pero mudo (sin 'close').
+// Si no llega ningún chunk en este tiempo damos la transferencia por perdida.
+const RECV_IDLE_TIMEOUT_MS = 15000
 
 export interface IncomingTransferMeta {
   filename: string
@@ -26,6 +29,9 @@ export class ReceiverService extends EventEmitter {
   private bytesReceived = 0
   private startTime = 0
   private decisionResolve: ((accepted: boolean) => void) | null = null
+  private activeSocket: WebSocket | null = null
+  private activeIp: string | null = null
+  private idleTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(alias: string) {
     super()
@@ -51,8 +57,42 @@ export class ReceiverService extends EventEmitter {
     this.decisionResolve = null
   }
 
+  // Corta la recepción en curso (si hay) y avisa a la UI con 'error'.
+  // Si estamos recibiendo desde `ip`, cortamos (ej. la PC dejó de responder)
+  failIfFrom(ip: string, reason: LinkLoss): void {
+    if (this.activeIp === ip) this.failActive(reason)
+  }
+
+  failActive(reason: LinkLoss): void {
+    if (!this.activeMeta) return
+    this.clearIdleTimer()
+    const meta = this.activeMeta
+    // Borramos el archivo a medio escribir para no dejar basura
+    try { if (this.activeFile?.exists) this.activeFile.delete() } catch {}
+    this.activeMeta = null
+    this.activeFile = null
+    this.activeSocket?.close()
+    this.activeSocket = null
+    this.activeIp = null
+    this.emit('error', { ...meta, reason })
+  }
+
+  private resetIdleTimer(): void {
+    this.clearIdleTimer()
+    this.idleTimer = setTimeout(
+      () => this.failActive('peer-offline'), // dejó de llegar el archivo
+      RECV_IDLE_TIMEOUT_MS
+    )
+  }
+
+  private clearIdleTimer(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer)
+    this.idleTimer = null
+  }
+
   stop(): void {
     this.stopped = true
+    this.clearIdleTimer()
     for (const timer of this.reconnectTimers.values()) clearTimeout(timer)
     this.reconnectTimers.clear()
     for (const ws of this.sockets.values()) ws.close()
@@ -70,7 +110,7 @@ export class ReceiverService extends EventEmitter {
     ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data as string)
-        this.handleMessage(ws, msg)
+        this.handleMessage(ws, ip, msg)
       } catch {
         // mensaje malformado — ignorar
       }
@@ -78,6 +118,9 @@ export class ReceiverService extends EventEmitter {
 
     ws.onclose = () => {
       this.sockets.delete(ip)
+      if (this.activeSocket === ws) {
+        this.failActive('closed')
+      }
       if (this.stopped) return
       const timer = setTimeout(() => {
         this.reconnectTimers.delete(ip)
@@ -91,7 +134,7 @@ export class ReceiverService extends EventEmitter {
     }
   }
 
-  private handleMessage(ws: WebSocket, msg: Record<string, unknown>): void {
+  private handleMessage(ws: WebSocket, ip: string, msg: Record<string, unknown>): void {
     if (msg.type === 'metadata') {
       this.activeMeta = {
         filename: String(msg.filename),
@@ -103,11 +146,20 @@ export class ReceiverService extends EventEmitter {
         this.decisionResolve = resolve
         this.emit('transferRequest', this.activeMeta)
       }).then((accepted) => {
+        // Si la conexión se cayó mientras el usuario decidía, no hay a quién responder
+        if (ws.readyState !== WebSocket.OPEN) {
+          const meta = this.activeMeta
+          this.activeMeta = null
+          if (accepted) this.emit('error', { ...meta, reason: 'closed' satisfies LinkLoss })
+          return
+        }
         ws.send(JSON.stringify({ type: 'decision', accepted }))
         if (!accepted) {
           this.activeMeta = null
           return
         }
+        this.activeSocket = ws
+        this.activeIp = ip
         this.beginReceiving()
       })
 
@@ -118,6 +170,7 @@ export class ReceiverService extends EventEmitter {
       // Largo aproximado en bytes de un string base64 (sin contar el padding exacto) —
       // suficiente para una barra de progreso, no hace falta decodificar para medirlo.
       this.bytesReceived += Math.floor((data.length * 3) / 4)
+      this.resetIdleTimer()
 
       const elapsed = (Date.now() - this.startTime) / 1000 || 0.001
       this.emit('progress', {
@@ -129,6 +182,9 @@ export class ReceiverService extends EventEmitter {
       ws.send(JSON.stringify({ type: 'chunkAck' }))
 
     } else if (msg.type === 'done') {
+      this.clearIdleTimer()
+      this.activeSocket = null
+      this.activeIp = null
       ws.send(JSON.stringify({ type: 'ack' }))
       this.emit('done', { ...this.activeMeta, savedPath: this.activeFile?.uri })
       this.activeFile = null
@@ -144,6 +200,7 @@ export class ReceiverService extends EventEmitter {
     this.bytesReceived = 0
     this.startTime = Date.now()
     this.emit('start', this.activeMeta)
+    this.resetIdleTimer()
   }
 
   // Si el nombre ya existe, renombra automáticamente (mismo criterio que el desktop).
