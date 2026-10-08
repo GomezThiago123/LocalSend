@@ -86,7 +86,9 @@ export default function TransferMonitor({ transfers, outgoing, onOpenPath }: Pro
               </div>
               {(t.status === 'error' || t.status === 'rejected') && (
                 <p style={styles.errorHint}>
-                  {SEND_ERROR_MESSAGES[t.status] ?? t.errorReason ?? 'Error desconocido.'}
+                  {t.status === 'rejected'
+                    ? SEND_ERROR_MESSAGES.rejected
+                    : `No se pudo enviar. ${t.errorReason ?? SEND_ERROR_MESSAGES.error}`}
                 </p>
               )}
             </div>
@@ -136,7 +138,7 @@ export default function TransferMonitor({ transfers, outgoing, onOpenPath }: Pro
               </div>
               {t.status === 'error' && (
                 <p style={styles.errorHint}>
-                  {RECV_ERROR_MESSAGES[t.errorReason ?? ''] ?? 'Conexión perdida — verificá la red Wi-Fi y reintentá desde el dispositivo emisor.'}
+                  {recvErrorMessage(t.errorReason, t.meta.senderAlias)}
                 </p>
               )}
             </div>
@@ -147,9 +149,17 @@ export default function TransferMonitor({ transfers, outgoing, onOpenPath }: Pro
   )
 }
 
-const RECV_ERROR_MESSAGES: Record<string, string> = {
-  connection: 'Conexión interrumpida — pedile al remitente que reintente.',
-  protocol: 'Error de protocolo — reiniciá el envío desde el móvil.',
+function recvErrorMessage(reason: string | undefined, senderAlias: string): string {
+  switch (reason) {
+    case 'local-offline':
+      return 'No se pudo recibir: esta PC se quedó sin conexión Wi-Fi.'
+    case 'peer-offline':
+      return `No se pudo recibir: "${senderAlias}" se quedó sin conexión Wi-Fi.`
+    case 'protocol':
+      return 'Error de protocolo — reiniciá el envío desde el móvil.'
+    default:
+      return `No se pudo recibir: "${senderAlias}" cerró la conexión.`
+  }
 }
 
 const SEND_ERROR_MESSAGES: Record<string, string> = {

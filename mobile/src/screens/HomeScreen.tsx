@@ -15,7 +15,7 @@ import * as ImagePicker from 'expo-image-picker'
 import * as Haptics from 'expo-haptics'
 import * as Network from 'expo-network'
 import { DiscoveryService, type DiscoveredDevice } from '../services/discovery'
-import { TransferClient, type TransferProgress, type TransferStatus } from '../services/transfer'
+import { TransferClient, type TransferProgress, type TransferStatus, type LinkLoss } from '../services/transfer'
 import { ReceiverService, type IncomingTransferMeta } from '../services/receiver'
 import { getOrCreateAlias } from '../services/deviceAlias'
 import { requestMediaPermission } from '../services/permissions'
@@ -26,6 +26,24 @@ import RadarView from '../components/RadarView'
 import TransferProgressModal from '../components/TransferProgressModal'
 import { useTheme } from '../theme'
 
+// Texto para el usuario según quién perdió la red. El que se queda sin Wi-Fi
+// no puede avisar nada, así que es el otro lado el que lo deduce y lo muestra.
+function lossMessage(kind: LinkLoss, peerAlias: string, dir: 'send' | 'receive'): string {
+  const verb = dir === 'send' ? 'enviar' : 'recibir'
+  switch (kind) {
+    case 'local-offline':
+      return `Este celular se quedó sin Wi-Fi. El archivo no se pudo ${verb}.`
+    case 'peer-offline':
+      return `La PC "${peerAlias}" se quedó sin conexión Wi-Fi. El archivo no se pudo ${verb}.`
+    case 'connect':
+      return `No se pudo conectar con "${peerAlias}". Verificá que estén en la misma red Wi-Fi.`
+    default:
+      return `La PC "${peerAlias}" cerró la conexión. El archivo no se pudo ${verb}.`
+  }
+}
+
+const LOSS_KINDS: LinkLoss[] = ['peer-offline', 'closed', 'local-offline', 'connect']
+
 export default function HomeScreen(): React.JSX.Element {
   const t = useTheme()
   const scheme = useColorScheme()
@@ -33,19 +51,44 @@ export default function HomeScreen(): React.JSX.Element {
   const [devices, setDevices] = useState<DiscoveredDevice[]>([])
   const [selectedFiles, setSelectedFiles] = useState<SelectedFile[]>([])
   const [isOnWifi, setIsOnWifi] = useState(true)
+  // Aviso cuando la PC vinculada desaparece estando nosotros conectados
+  const [peerNotice, setPeerNotice] = useState<string | null>(null)
   const [transferModal, setTransferModal] = useState(false)
   const [transferDevice, setTransferDevice] = useState<DiscoveredDevice | null>(null)
   const [transferFile, setTransferFile] = useState<SelectedFile | null>(null)
   const [transferStatus, setTransferStatus] = useState<TransferStatus>('connecting')
   const [transferProgress, setTransferProgress] = useState<TransferProgress | null>(null)
+  const [transferError, setTransferError] = useState<string | null>(null)
 
   const [incomingModal, setIncomingModal] = useState(false)
   const [incomingMeta, setIncomingMeta] = useState<IncomingTransferMeta | null>(null)
   const [incomingStatus, setIncomingStatus] = useState<TransferStatus>('receiving')
   const [incomingProgress, setIncomingProgress] = useState<TransferProgress | null>(null)
+  const [incomingError, setIncomingError] = useState<string | null>(null)
 
   const discoveryRef = useRef<DiscoveryService | null>(null)
   const receiverRef = useRef<ReceiverService | null>(null)
+  const activeClientRef = useRef<TransferClient | null>(null)
+  const isOnWifiRef = useRef(true)
+  // Tipo de red por el que llegamos a la PC. Normalmente WIFI, pero si el
+  // celular comparte su hotspot es CELLULAR: ahí "sin Wi-Fi" no es un error.
+  const netTypeRef = useRef<Network.NetworkStateType | null>(null)
+  const linkTypeRef = useRef<Network.NetworkStateType | null>(null)
+
+  const isLocalLinkUp = (state: Network.NetworkState): boolean =>
+    state.isConnected !== false && state.type === (linkTypeRef.current ?? Network.NetworkStateType.WIFI)
+
+  // Si el corte parece culpa de la PC, primero confirmamos que NUESTRA red
+  // siga arriba: si no, el que se quedó sin Wi-Fi es este celular.
+  async function resolveLoss(kind: LinkLoss): Promise<LinkLoss> {
+    if (kind === 'local-offline' || kind === 'connect') return kind
+    try {
+      const state = await Network.getNetworkStateAsync()
+      return isLocalLinkUp(state) ? kind : 'local-offline'
+    } catch {
+      return kind
+    }
+  }
 
   useEffect(() => {
     let mounted = true
@@ -81,7 +124,17 @@ export default function HomeScreen(): React.JSX.Element {
         setIncomingMeta(meta)
         setIncomingStatus('receiving')
         setIncomingProgress(null)
+        setIncomingError(null)
         setIncomingModal(true)
+      })
+      receiver.on('error', async (e: IncomingTransferMeta & { reason: LinkLoss }) => {
+        const kind = await resolveLoss(e.reason)
+        if (!mounted) return
+        setIncomingMeta(e)
+        setIncomingStatus('error')
+        setIncomingError(lossMessage(kind, e.senderAlias, 'receive'))
+        setIncomingModal(true)
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
       })
       receiver.on('progress', (p: TransferProgress) => {
         if (!mounted) return
@@ -96,6 +149,8 @@ export default function HomeScreen(): React.JSX.Element {
       discovery.on('deviceFound', (d: DiscoveredDevice) => {
         if (!mounted) return
         setDevices((prev) => (prev.find((x) => x.ip === d.ip) ? prev : [...prev, d]))
+        setPeerNotice(null)
+        linkTypeRef.current = netTypeRef.current
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
         if (d.deviceType === 'desktop' || d.deviceType === 'laptop') {
           receiver.connectTo(d.ip, d.port)
@@ -105,10 +160,17 @@ export default function HomeScreen(): React.JSX.Element {
         if (!mounted) return
         setDevices((prev) => prev.map((x) => (x.ip === d.ip ? d : x)))
       })
-      discovery.on('deviceLost', (ip: string) => {
+      discovery.on('deviceLost', async (ip: string, device?: DiscoveredDevice) => {
         if (!mounted) return
         setDevices((prev) => prev.filter((x) => x.ip !== ip))
+        // La PC dejó de responder: cortamos lo que estuviera en curso con ella
+        // ANTES de cerrar el socket (si no, se reportaría como 'closed').
+        if (activeClientRef.current?.targetIp === ip) activeClientRef.current.cancel('peer-offline')
+        receiver.failIfFrom(ip, 'peer-offline')
         receiver.disconnectFrom(ip)
+        if ((await resolveLoss('peer-offline')) === 'peer-offline' && mounted) {
+          setPeerNotice(`La PC "${device?.alias ?? ip}" se quedó sin conexión Wi-Fi.`)
+        }
       })
 
       try {
@@ -120,14 +182,26 @@ export default function HomeScreen(): React.JSX.Element {
 
     init()
 
-    // Poll Wi-Fi state every 3 seconds using expo-network (no native subscription needed)
+    // Poll network state every 3 seconds using expo-network (no native subscription needed)
+    const applyNetState = (state: Network.NetworkState): void => {
+      netTypeRef.current = state.type ?? null
+      const up = isLocalLinkUp(state)
+      const wasUp = isOnWifiRef.current
+      isOnWifiRef.current = up
+      setIsOnWifi(up)
+      if (wasUp && !up) {
+        // Este celular perdió la red: ningún dispositivo es alcanzable y
+        // cualquier transferencia en curso falla ya, sin esperar al timeout.
+        setDevices([])
+        setPeerNotice(null)
+        activeClientRef.current?.cancel('local-offline')
+        receiverRef.current?.failActive('local-offline')
+      }
+    }
     const wifiTimer = setInterval(async () => {
-      const type = await Network.getNetworkStateAsync()
-      setIsOnWifi(type.type === Network.NetworkStateType.WIFI)
+      applyNetState(await Network.getNetworkStateAsync())
     }, 3000)
-    Network.getNetworkStateAsync().then((s) => {
-      setIsOnWifi(s.type === Network.NetworkStateType.WIFI)
-    })
+    Network.getNetworkStateAsync().then(applyNetState)
 
     return () => {
       mounted = false
@@ -173,6 +247,10 @@ export default function HomeScreen(): React.JSX.Element {
 
   const sendToDevice = useCallback(
     async (device: DiscoveredDevice) => {
+      if (!isOnWifiRef.current) {
+        Alert.alert('Sin conexión', 'Este celular no tiene Wi-Fi. Conectate a la misma red que la PC para enviar.')
+        return
+      }
       if (selectedFiles.length === 0) {
         Alert.alert('Sin archivos', 'Seleccioná al menos un archivo para enviar.')
         return
@@ -204,9 +282,11 @@ export default function HomeScreen(): React.JSX.Element {
     setTransferFile(file)
     setTransferStatus('connecting')
     setTransferProgress(null)
+    setTransferError(null)
     setTransferModal(true)
 
     const client = new TransferClient()
+    activeClientRef.current = client
     client.on('status', (s: TransferStatus) => setTransferStatus(s))
     client.on('progress', (p: TransferProgress) => setTransferProgress(p))
 
@@ -224,9 +304,16 @@ export default function HomeScreen(): React.JSX.Element {
         mime: file.mimeType
       })
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : ''
+      if (msg !== 'rejected') {
+        const kind = await resolveLoss(LOSS_KINDS.includes(msg as LinkLoss) ? (msg as LinkLoss) : 'closed')
+        setTransferStatus('error')
+        setTransferError(lossMessage(kind, device.alias, 'send'))
+      }
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
     } finally {
+      if (activeClientRef.current === client) activeClientRef.current = null
       await stopForegroundTask(notifId)
     }
   }
@@ -245,9 +332,15 @@ export default function HomeScreen(): React.JSX.Element {
       {!isOnWifi && (
         <View style={styles.wifiBanner}>
           <Text style={styles.wifiBannerText}>
-            ⚠ No estás conectado a Wi-Fi. Conectate para descubrir dispositivos.
+            ⚠ Este celular no tiene Wi-Fi. Conectate para descubrir dispositivos.
           </Text>
         </View>
+      )}
+
+      {isOnWifi && peerNotice && (
+        <TouchableOpacity style={styles.wifiBanner} onPress={() => setPeerNotice(null)}>
+          <Text style={styles.wifiBannerText}>⚠ {peerNotice} (tocá para cerrar)</Text>
+        </TouchableOpacity>
       )}
 
       <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false}>
@@ -310,6 +403,7 @@ export default function HomeScreen(): React.JSX.Element {
           thumbnail={transferFile.thumbnail}
           status={transferStatus}
           progress={transferProgress}
+          errorMessage={transferError}
           onClose={() => setTransferModal(false)}
           onRetry={() => {
             setTransferModal(false)
@@ -326,6 +420,7 @@ export default function HomeScreen(): React.JSX.Element {
           filename={incomingMeta.filename}
           status={incomingStatus}
           progress={incomingProgress}
+          errorMessage={incomingError}
           onClose={() => setIncomingModal(false)}
         />
       )}

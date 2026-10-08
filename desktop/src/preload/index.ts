@@ -77,6 +77,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('send:error', (_, e) => cb(e))
   },
 
+  onPeerOffline: (cb: (p: { ip: string; alias: string }) => void) => {
+    ipcRenderer.on('peer:offline', (_, p) => cb(p))
+  },
+
+  // Estado de la red de la PC (online/offline + IP actual)
+  onNetworkStatus: (cb: (s: { online: boolean; localIp: string }) => void) => {
+    ipcRenderer.on('network:status', (_, s) => cb(s))
+  },
+
   removeAllListeners: (channel: string) => {
     ipcRenderer.removeAllListeners(channel)
   }

@@ -1,5 +1,5 @@
 import * as dgram from 'dgram'
-import { networkInterfaces } from 'os'
+import { getLanIp } from './network'
 import { EventEmitter } from 'events'
 
 export const DISCOVERY_PORT = 53317
@@ -37,15 +37,7 @@ export class UdpDiscoveryServer extends EventEmitter {
   }
 
   getLocalIp(): string {
-    const nets = networkInterfaces()
-    for (const name of Object.keys(nets)) {
-      for (const net of nets[name]!) {
-        if (net.family === 'IPv4' && !net.internal) {
-          return net.address
-        }
-      }
-    }
-    return '127.0.0.1'
+    return getLanIp() ?? '127.0.0.1'
   }
 
   start(): Promise<void> {
@@ -53,7 +45,9 @@ export class UdpDiscoveryServer extends EventEmitter {
       this.socket = dgram.createSocket({ type: 'udp4', reuseAddr: true })
 
       this.socket.on('error', (err) => {
-        this.emit('error', err)
+        // Sin red, send() al broadcast falla (ENETUNREACH). Si emitimos 'error'
+        // sin nadie escuchando, Node lo lanza y tumba el proceso main de Electron.
+        if (this.listenerCount('error') > 0) this.emit('error', err)
         reject(err)
       })
 
@@ -109,7 +103,8 @@ export class UdpDiscoveryServer extends EventEmitter {
       port: this.tcpPort
     }
     const msg = Buffer.from(JSON.stringify(payload))
-    this.socket.send(msg, DISCOVERY_PORT, target)
+    // El callback evita que un fallo de envío (sin red) se emita como 'error'
+    this.socket.send(msg, DISCOVERY_PORT, target, () => {})
   }
 
   private startBeaconing(): void {

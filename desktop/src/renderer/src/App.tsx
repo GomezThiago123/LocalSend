@@ -36,14 +36,30 @@ export default function App(): JSX.Element {
   const [pendingCollision, setPendingCollision] = useState<{ id: string; filename: string } | null>(null)
   const [config, setConfig] = useState({ alias: '', downloadDir: '', localIp: '' })
   const [serverActive, setServerActive] = useState(false)
+  const [online, setOnline] = useState(true)
+  const [peerNotice, setPeerNotice] = useState<{ ip: string; alias: string } | null>(null)
   const [filesToSend, setFilesToSend] = useState<string[]>([])
 
   const api = (window as any).electronAPI
 
   useEffect(() => {
-    api.getConfig().then((c: typeof config) => {
+    api.getConfig().then((c: typeof config & { online: boolean }) => {
       setConfig(c)
+      setOnline(c.online)
       setServerActive(true)
+    })
+
+    api.onPeerOffline((p: { ip: string; alias: string }) => setPeerNotice(p))
+
+    api.onNetworkStatus((s: { online: boolean; localIp: string }) => {
+      setOnline(s.online)
+      setConfig((c) => ({ ...c, localIp: s.localIp }))
+      // Sin red ningún dispositivo es alcanzable: vaciamos la lista. Al volver
+      // la red reaparecen solos con el próximo beacon / registro del móvil.
+      if (!s.online) {
+        setDevices([])
+        setPeerNotice(null)
+      }
     })
 
     api.listDevices().then((list: DiscoveredDevice[]) => {
@@ -51,6 +67,7 @@ export default function App(): JSX.Element {
     })
 
     api.onDeviceFound((d: DiscoveredDevice) => {
+      setPeerNotice((p) => (p?.ip === d.ip ? null : p))
       setDevices((prev) => {
         if (prev.find((x) => x.ip === d.ip)) return prev
         return [...prev, d]
@@ -153,7 +170,8 @@ export default function App(): JSX.Element {
         'transfer:request', 'transfer:start', 'transfer:progress',
         'transfer:done', 'transfer:error', 'transfer:decision',
         'transfer:collision',
-        'send:start', 'send:progress', 'send:status', 'send:done', 'send:error'
+        'send:start', 'send:progress', 'send:status', 'send:done', 'send:error',
+        'network:status', 'peer:offline'
       ]
       channels.forEach((ch) => api.removeAllListeners(ch))
     }
@@ -191,6 +209,10 @@ export default function App(): JSX.Element {
   const handleDeviceClick = useCallback(
     (device: DiscoveredDevice) => {
       if (filesToSend.length === 0) return
+      if (!online) {
+        window.alert('Sin conexión de red: conectá la PC al Wi-Fi para poder enviar archivos.')
+        return
+      }
       const label =
         filesToSend.length === 1
           ? `"${filesToSend[0].split(/[\\/]/).pop()}"`
@@ -199,7 +221,7 @@ export default function App(): JSX.Element {
       api.sendFiles(device, filesToSend)
       setFilesToSend([])
     },
-    [filesToSend, api]
+    [filesToSend, api, online]
   )
 
   const transferList = Array.from(transfers.values())
@@ -211,11 +233,22 @@ export default function App(): JSX.Element {
         alias={config.alias}
         localIp={config.localIp}
         serverActive={serverActive}
+        online={online}
         downloadDir={config.downloadDir}
         onAliasChange={handleAliasChange}
         onPickDownloadDir={handlePickDownloadDir}
         onOpenDownloadDir={() => api.openPath(config.downloadDir)}
       />
+      {!online && (
+        <div style={styles.offlineBanner}>
+          ⚠ Sin conexión de red — la PC no está conectada al Wi-Fi. No se pueden enviar ni recibir archivos.
+        </div>
+      )}
+      {online && peerNotice && (
+        <div style={styles.offlineBanner} onClick={() => setPeerNotice(null)} title="Click para cerrar">
+          ⚠ El celular "{peerNotice.alias}" se quedó sin conexión Wi-Fi — dejó de responder. (click para cerrar)
+        </div>
+      )}
       <main style={styles.main}>
         <div style={styles.left}>
           <DeviceList
@@ -258,6 +291,14 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     height: '100vh',
     overflow: 'hidden'
+  },
+  offlineBanner: {
+    background: '#7f1d1d',
+    color: '#fecaca',
+    padding: '8px 20px',
+    fontSize: 13,
+    fontWeight: 600,
+    flexShrink: 0
   },
   main: {
     display: 'flex',

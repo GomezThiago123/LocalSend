@@ -35,7 +35,27 @@ interface ActiveTransfer {
   resolve: (accepted: boolean) => void
 }
 
-const PUSH_CHUNK_BYTES = 48 * 1024 // mismo tamaño que usa el móvil al enviar, por consistencia
+// 256 KB: el desktop lee de disco sin problema y el móvil parsea el JSON sin
+// trabarse. Con 48 KB un video de 500 MB eran ~11.000 idas y vueltas de ack.
+const PUSH_CHUNK_BYTES = 256 * 1024
+
+// Si se corta el Wi-Fi de golpe, TCP no avisa: el socket queda "abierto" pero
+// mudo y nunca llega 'close'. Sin estos timeouts la transferencia quedaría
+// colgada para siempre en vez de mostrar el error.
+const ACK_TIMEOUT_MS = 15000
+const RECV_IDLE_TIMEOUT_MS = 15000
+
+// Latido: cada 3s mandamos un ping a cada conexión. El WebSocket del móvil
+// responde el pong solo (a nivel nativo, aunque el JS esté ocupado). Si se
+// pierden 2 seguidos, el otro dispositivo se quedó sin red.
+const HEARTBEAT_MS = 3000
+const MAX_MISSED_PONGS = 2
+
+// Por qué se cortó una conexión — define qué mensaje ve el usuario:
+//  - 'local-offline': ESTA PC perdió la red
+//  - 'peer-offline':  el OTRO dispositivo dejó de responder (se quedó sin Wi-Fi)
+//  - 'connection':    el otro cerró la conexión normalmente (cerró la app, etc.)
+export type DropReason = 'local-offline' | 'peer-offline' | 'connection'
 
 interface PushWaiter<T = void> {
   resolve: (v: T) => void
@@ -65,7 +85,12 @@ export class WsTransferServer extends EventEmitter {
   // dentro de Expo Go, así que en su lugar mantiene abierta la conexión que
   // él mismo inició y la usamos en ambos sentidos.
   private receivers = new Map<string, WebSocket>()
+  private receiverAliases = new Map<string, string>()
   private pushWaiters = new Map<string, PushWaiters>()
+
+  private dropReasons = new WeakMap<WebSocket, DropReason>()
+  private missedPongs = new WeakMap<WebSocket, number>()
+  private heartbeatTimer: NodeJS.Timeout | null = null
 
   constructor(downloadDir: string) {
     super()
@@ -121,6 +146,37 @@ export class WsTransferServer extends EventEmitter {
     this.wss.on('connection', (ws, req) => this.handleConnection(ws, req))
   }
 
+  // Corta la conexión recordando el motivo, que lee el handler de 'close'
+  private drop(ws: WebSocket, reason: DropReason): void {
+    if (!this.dropReasons.has(ws)) this.dropReasons.set(ws, reason)
+    ws.terminate()
+  }
+
+  private startHeartbeat(): void {
+    this.heartbeatTimer = setInterval(() => {
+      for (const ws of this.wss.clients) {
+        const missed = this.missedPongs.get(ws) ?? 0
+        if (missed >= MAX_MISSED_PONGS) {
+          this.drop(ws, 'peer-offline')
+          continue
+        }
+        this.missedPongs.set(ws, missed + 1)
+        ws.ping()
+      }
+    }, HEARTBEAT_MS)
+  }
+
+  private peerName(ip: string): string {
+    return this.receiverAliases.get(ip) ?? ip
+  }
+
+  // Mensaje para el usuario según por qué se cortó la conexión con `ip`
+  private dropMessage(reason: DropReason, ip: string): string {
+    if (reason === 'local-offline') return 'Esta PC se quedó sin conexión Wi-Fi.'
+    if (reason === 'peer-offline') return `El celular "${this.peerName(ip)}" se quedó sin conexión Wi-Fi.`
+    return `El celular "${this.peerName(ip)}" cerró la conexión.`
+  }
+
   private alias = 'LocalSend Desktop'
 
   setAlias(alias: string): void {
@@ -130,7 +186,21 @@ export class WsTransferServer extends EventEmitter {
   private handleConnection(ws: WebSocket, req: http.IncomingMessage): void {
     const senderIp = req.socket.remoteAddress?.replace('::ffff:', '') ?? 'unknown'
     let transfer: ActiveTransfer | null = null
-    let expectingBinary = false
+    let idleTimer: NodeJS.Timeout | null = null
+
+    this.missedPongs.set(ws, 0)
+    ws.on('pong', () => this.missedPongs.set(ws, 0))
+
+    // Mientras recibimos, si el emisor deja de mandar chunks cortamos la conexión:
+    // terminate() dispara 'close', que marca la transferencia como fallida.
+    const resetIdleTimer = (): void => {
+      if (idleTimer) clearTimeout(idleTimer)
+      idleTimer = setTimeout(() => this.drop(ws, 'peer-offline'), RECV_IDLE_TIMEOUT_MS)
+    }
+    const clearIdleTimer = (): void => {
+      if (idleTimer) clearTimeout(idleTimer)
+      idleTimer = null
+    }
 
     ws.on('message', async (data, isBinary) => {
       if (!isBinary) {
@@ -142,6 +212,7 @@ export class WsTransferServer extends EventEmitter {
             // El móvil se anuncia como receptor: guardamos esta conexión para
             // poder empujarle archivos más adelante (Desktop→Mobile).
             this.receivers.set(senderIp, ws)
+            this.receiverAliases.set(senderIp, String(msg.alias ?? senderIp))
             ws.send(JSON.stringify({ type: 'registered' }))
 
           } else if (msg.type === 'decision' && this.pushWaiters.has(senderIp)) {
@@ -214,6 +285,7 @@ export class WsTransferServer extends EventEmitter {
             transfer!.savedPath = destPath
             ws.send(JSON.stringify({ type: 'decision', accepted: true }))
             this.emit('transferStart', meta)
+            resetIdleTimer()
 
           } else if (msg.type === 'chunk') {
             // Base64 text chunk from mobile (Expo Go compatible protocol)
@@ -221,6 +293,7 @@ export class WsTransferServer extends EventEmitter {
             const chunk = Buffer.from(msg.data, 'base64')
             transfer.writeStream.write(chunk)
             transfer.bytesReceived += chunk.byteLength
+            resetIdleTimer()
 
             const elapsed = (Date.now() - transfer.startTime) / 1000 || 0.001
             this.emit('transferProgress', {
@@ -236,6 +309,7 @@ export class WsTransferServer extends EventEmitter {
 
           } else if (msg.type === 'done') {
             if (transfer?.state === 'receiving') {
+              clearIdleTimer()
               transfer.writeStream?.end()
               transfer.state = 'done'
               this.emit('transferDone', { ...transfer.meta, savedPath: transfer.savedPath })
@@ -255,11 +329,18 @@ export class WsTransferServer extends EventEmitter {
       // binary frames kept for future desktop↔desktop transfers
     })
 
-    const cleanupPushSession = (): void => {
-      if (this.receivers.get(senderIp) === ws) this.receivers.delete(senderIp)
+    const cleanupPushSession = (reason: DropReason): void => {
+      if (this.receivers.get(senderIp) === ws) {
+        this.receivers.delete(senderIp)
+        // El celular dejó de estar alcanzable: lo sacamos de la lista de la UI
+        if (reason !== 'connection') this.emit('deviceLost', senderIp)
+        if (reason === 'peer-offline') {
+          this.emit('peerOffline', { ip: senderIp, alias: this.peerName(senderIp) })
+        }
+      }
       const waiters = this.pushWaiters.get(senderIp)
       if (waiters) {
-        const err = new Error('Conexión con el móvil interrumpida')
+        const err = new Error(this.dropMessage(reason, senderIp))
         waiters.decision?.reject(err)
         waiters.chunkAck?.reject(err)
         waiters.finalAck?.reject(err)
@@ -267,20 +348,17 @@ export class WsTransferServer extends EventEmitter {
       }
     }
 
-    ws.on('error', () => {
-      cleanupPushSession()
-      if (transfer?.state === 'receiving') {
-        transfer.writeStream?.destroy()
-        this.emit('transferError', { id: transfer.meta.id, reason: 'connection' })
-        this.pendingDecisions.delete(transfer.meta.id)
-      }
-    })
+    // 'error' siempre viene seguido de 'close', que es quien limpia y avisa
+    ws.on('error', () => {})
 
     ws.on('close', () => {
-      cleanupPushSession()
+      clearIdleTimer()
+      const reason = this.dropReasons.get(ws) ?? 'connection'
+      cleanupPushSession(reason)
       if (transfer?.state === 'receiving') {
+        transfer.state = 'error'
         transfer.writeStream?.destroy()
-        this.emit('transferError', { id: transfer.meta.id, reason: 'connection' })
+        this.emit('transferError', { id: transfer.meta.id, reason, senderAlias: transfer.meta.senderAlias })
         this.pendingDecisions.delete(transfer.meta.id)
       }
     })
@@ -297,12 +375,27 @@ export class WsTransferServer extends EventEmitter {
   ): Promise<void> {
     const ws = this.receivers.get(ip)
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new Error('El dispositivo móvil no tiene una conexión activa para recibir archivos')
+      throw new Error('El celular no está conectado: puede haberse quedado sin Wi-Fi. Esperá a que vuelva a aparecer en la lista.')
     }
 
     const filename = path.basename(filePath)
     const { size } = fs.statSync(filePath)
     const startTime = Date.now()
+
+    // Espera la respuesta del móvil (chunkAck / ack final). Si no llega a tiempo
+    // asumimos que se cayó la red: cerramos el socket y fallamos el envío.
+    const waitForAck = (key: 'chunkAck' | 'finalAck'): Promise<void> =>
+      new Promise<void>((resolve, reject) => {
+        // Si vence, drop() dispara 'close' → cleanupPushSession rechaza esta
+        // misma espera con el mensaje "el celular se quedó sin Wi-Fi".
+        const timer = setTimeout(() => this.drop(ws, 'peer-offline'), ACK_TIMEOUT_MS)
+        const waiters = this.pushWaiters.get(ip) ?? {}
+        waiters[key] = {
+          resolve: () => { clearTimeout(timer); resolve() },
+          reject: (err) => { clearTimeout(timer); reject(err) }
+        }
+        this.pushWaiters.set(ip, waiters)
+      })
 
     const accepted = await new Promise<boolean>((resolve, reject) => {
       this.pushWaiters.set(ip, { decision: { resolve, reject } })
@@ -327,11 +420,7 @@ export class WsTransferServer extends EventEmitter {
 
         // Backpressure: esperamos el chunkAck del móvil antes de seguir (mismo
         // mecanismo que usa el móvil al enviarnos archivos a nosotros).
-        await new Promise<void>((resolve, reject) => {
-          const waiters = this.pushWaiters.get(ip) ?? {}
-          waiters.chunkAck = { resolve, reject }
-          this.pushWaiters.set(ip, waiters)
-        })
+        await waitForAck('chunkAck')
 
         offset += bytesRead
         const elapsed = (Date.now() - startTime) / 1000 || 0.001
@@ -339,11 +428,7 @@ export class WsTransferServer extends EventEmitter {
       }
 
       ws.send(JSON.stringify({ type: 'done' }))
-      await new Promise<void>((resolve, reject) => {
-        const waiters = this.pushWaiters.get(ip) ?? {}
-        waiters.finalAck = { resolve, reject }
-        this.pushWaiters.set(ip, waiters)
-      })
+      await waitForAck('finalAck')
     } finally {
       fs.closeSync(fd)
       this.pushWaiters.delete(ip)
@@ -383,18 +468,28 @@ export class WsTransferServer extends EventEmitter {
     }
   }
 
+  // Llamado cuando la PC pierde la red: cortamos todas las conexiones para que
+  // las transferencias en curso fallen ya, en vez de esperar al timeout.
+  dropAllConnections(): void {
+    for (const client of this.wss.clients) this.drop(client, 'local-offline')
+  }
+
   setDownloadDir(dir: string): void {
     this.downloadDir = dir
   }
 
   start(): Promise<void> {
     return new Promise((resolve) => {
-      this.httpServer.listen(WS_PORT, () => resolve())
+      this.httpServer.listen(WS_PORT, () => {
+        this.startHeartbeat()
+        resolve()
+      })
     })
   }
 
   stop(): Promise<void> {
     return new Promise((resolve) => {
+      if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
       this.wss.close(() => {
         this.httpServer.close(() => resolve())
       })

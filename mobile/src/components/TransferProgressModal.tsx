@@ -12,6 +12,7 @@ interface Props {
   onClose: () => void
   onRetry?: () => void
   direction?: 'send' | 'receive'
+  errorMessage?: string | null
 }
 
 function formatBytes(bytes: number): string {
@@ -38,11 +39,11 @@ const STATUS_LABELS: Record<TransferStatus, string> = {
   sending: 'Enviando...',
   receiving: 'Recibiendo...',
   done: 'Completado',
-  error: 'Error de conexión'
+  error: 'Sin conexión — no se pudo completar'
 }
 
 export default function TransferProgressModal({
-  visible, deviceAlias, filename, thumbnail, status, progress, onClose, onRetry, direction = 'send'
+  visible, deviceAlias, filename, thumbnail, status, progress, onClose, onRetry, direction = 'send', errorMessage
 }: Props): React.JSX.Element {
   const barWidth = useRef(new Animated.Value(0)).current
 
@@ -94,6 +95,12 @@ export default function TransferProgressModal({
               </>
             )}
           </View>
+
+          {status === 'error' && (
+            <Text style={styles.errorText}>
+              ⚠ {errorMessage ?? 'Se perdió la conexión. Verificá que estés en la misma red Wi-Fi que la PC.'}
+            </Text>
+          )}
 
           {canClose && (
             <View style={{ flexDirection: 'row', gap: 10, width: '100%' }}>
@@ -174,6 +181,11 @@ const styles = StyleSheet.create({
   stat: {
     fontSize: 13,
     color: '#94a3b8'
+  },
+  errorText: {
+    marginTop: 14,
+    fontSize: 13,
+    color: '#fca5a5'
   },
   closeBtn: {
     marginTop: 24,

@@ -6,7 +6,7 @@ import type { TransferMetadata, TransferProgress } from '../../main/wsServer'
 declare global {
   interface Window {
     electronAPI: {
-      getConfig: () => Promise<{ alias: string; downloadDir: string; localIp: string }>
+      getConfig: () => Promise<{ alias: string; downloadDir: string; localIp: string; online: boolean }>
       setAlias: (alias: string) => Promise<void>
       setDownloadDir: () => Promise<string | null>
       listDevices: () => Promise<DiscoveredDevice[]>
@@ -22,6 +22,8 @@ declare global {
       onTransferDone: (cb: (meta: TransferMetadata) => void) => void
       onTransferError: (cb: (id: string) => void) => void
       onTransferDecision: (cb: (d: { id: string; accepted: boolean }) => void) => void
+      onPeerOffline: (cb: (p: { ip: string; alias: string }) => void) => void
+      onNetworkStatus: (cb: (s: { online: boolean; localIp: string }) => void) => void
       removeAllListeners: (channel: string) => void
     }
   }

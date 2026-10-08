@@ -15,6 +15,7 @@ import Store from 'electron-store'
 import { UdpDiscoveryServer } from './udpServer'
 import { WsTransferServer, WS_PORT } from './wsServer'
 import { WsTransferClient } from './wsClient'
+import { getLanIp } from './network'
 import type { DiscoveredDevice } from './udpServer'
 
 interface AppConfig {
@@ -42,6 +43,34 @@ function resolveDownloadDir(): string {
 let mainWindow: BrowserWindow | null = null
 let udpServer: UdpDiscoveryServer | null = null
 let wsServer: WsTransferServer | null = null
+
+// Envíos desktop→desktop en curso, para poder cortarlos si se cae la red
+const activeClients = new Set<WsTransferClient>()
+
+// --- Estado de la red ---
+// Cada 2s miramos si la PC sigue teniendo IP en una red real. Al perderla
+// avisamos a la UI (banner "Sin conexión") y cortamos las transferencias en
+// curso para que fallen con error en vez de quedar colgadas.
+const NETWORK_POLL_MS = 2000
+let lastLanIp: string | null = getLanIp()
+
+function networkStatus(): { online: boolean; localIp: string } {
+  return { online: lastLanIp !== null, localIp: lastLanIp ?? '—' }
+}
+
+function startNetworkMonitor(): void {
+  setInterval(() => {
+    const ip = getLanIp()
+    if (ip === lastLanIp) return
+    const wasOnline = lastLanIp !== null
+    lastLanIp = ip
+    if (wasOnline && ip === null) {
+      wsServer?.dropAllConnections()
+      for (const client of activeClients) client.cancel()
+    }
+    mainWindow?.webContents.send('network:status', networkStatus())
+  }, NETWORK_POLL_MS)
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -98,6 +127,10 @@ async function startServers(): Promise<void> {
   wsServer.on('deviceLost', (ip: string) => {
     mainWindow?.webContents.send('device:lost', ip)
   })
+  // Un celular vinculado dejó de responder al latido: se quedó sin Wi-Fi
+  wsServer.on('peerOffline', (peer: { ip: string; alias: string }) => {
+    mainWindow?.webContents.send('peer:offline', peer)
+  })
 
   wsServer.on('transferRequest', (meta) => {
     mainWindow?.webContents.send('transfer:request', meta)
@@ -136,8 +169,14 @@ async function startServers(): Promise<void> {
       body: `"${meta.filename}" received from ${meta.senderAlias}`
     }).show()
   })
-  wsServer.on('transferError', (payload: { id: string; reason: string }) => {
+  wsServer.on('transferError', (payload: { id: string; reason: string; senderAlias?: string }) => {
     mainWindow?.webContents.send('transfer:error', payload)
+    const who = payload.senderAlias ?? 'El otro dispositivo'
+    const body =
+      payload.reason === 'local-offline' ? 'Esta PC se quedó sin conexión Wi-Fi. El archivo no se pudo recibir.'
+      : payload.reason === 'peer-offline' ? `"${who}" se quedó sin conexión Wi-Fi. El archivo no se pudo recibir.`
+      : 'Se perdió la conexión y el archivo no se pudo recibir.'
+    new Notification({ title: 'LocalSend — Transferencia interrumpida', body }).show()
   })
 
   await udpServer.start()
@@ -147,7 +186,7 @@ async function startServers(): Promise<void> {
 ipcMain.handle('config:get', () => ({
   alias: store.get('alias'),
   downloadDir: store.get('downloadDir'),
-  localIp: udpServer?.getLocalIp() ?? '127.0.0.1'
+  ...networkStatus()
 }))
 
 ipcMain.handle('config:setAlias', (_, alias: string) => {
@@ -192,7 +231,11 @@ ipcMain.handle('transfer:sendFiles', async (_, device: DiscoveredDevice, filePat
     const filename = basename(filePath)
     const { size } = statSync(filePath)
     mainWindow?.webContents.send('send:start', { id, filename, size, targetAlias: device.alias, targetIp: device.ip, bytesSent: 0, speedBps: 0, status: 'waiting' })
+    let client: WsTransferClient | null = null
     try {
+      if (lastLanIp === null) {
+        throw new Error('Sin conexión de red: conectá la PC al Wi-Fi e intentá de nuevo.')
+      }
       if (device.deviceType === 'mobile') {
         if (!wsServer) throw new Error('El servidor no está listo todavía')
         // El móvil no corre un servidor propio: reutilizamos la conexión
@@ -201,7 +244,8 @@ ipcMain.handle('transfer:sendFiles', async (_, device: DiscoveredDevice, filePat
           mainWindow?.webContents.send('send:progress', { id, ...p })
         })
       } else {
-        const client = new WsTransferClient()
+        client = new WsTransferClient()
+        activeClients.add(client)
         client.on('progress', (p) => mainWindow?.webContents.send('send:progress', { id, ...p }))
         client.on('status', (s) => mainWindow?.webContents.send('send:status', { id, status: s }))
         await client.sendFile(device.ip, device.port, filePath, alias)
@@ -214,6 +258,14 @@ ipcMain.handle('transfer:sendFiles', async (_, device: DiscoveredDevice, filePat
     } catch (err: unknown) {
       const reason = err instanceof Error ? err.message : 'unknown'
       mainWindow?.webContents.send('send:error', { id, reason })
+      if (reason !== 'rejected') {
+        new Notification({
+          title: 'LocalSend — No se pudo enviar',
+          body: `"${filename}" no llegó a ${device.alias}: ${reason}`
+        }).show()
+      }
+    } finally {
+      if (client) activeClients.delete(client)
     }
   }
 })
@@ -236,6 +288,7 @@ ipcMain.handle('dialog:pickFiles', async () => {
 app.whenReady().then(async () => {
   createWindow()
   await startServers()
+  startNetworkMonitor()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
