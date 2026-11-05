@@ -1,7 +1,15 @@
 import { EventEmitter } from 'eventemitter3'
 import * as Network from 'expo-network'
+import Constants from 'expo-constants'
+import AsyncStorage from '@react-native-async-storage/async-storage'
 
 export const WS_PORT = 53318
+const MANUAL_HOSTS_KEY = '@localsend/manualHosts'
+
+export function isIpv4(ip: string): boolean {
+  const parts = ip.split('.')
+  return parts.length === 4 && parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) <= 255)
+}
 const SCAN_INTERVAL_MS = 5000
 const PROBE_TIMEOUT_MS = 800
 const PROBE_BATCH = 25
@@ -33,12 +41,21 @@ export class DiscoveryService extends EventEmitter {
   private scanning = false
   private alias: string
 
+  // El escaneo automático solo cubre el /24 del celular (expo-network no expone
+  // la máscara de subred). En redes más grandes (ej. una /21 de facultad) la PC
+  // puede estar en otro bloque, así que estas IPs se prueban aparte en cada escaneo:
+  //  - devHost: en Expo Go, la PC que nos sirvió la app con Metro
+  //  - manualHosts: las que el usuario cargó a mano (persisten entre aperturas)
+  private devHost: string | null = null
+  private manualHosts = new Set<string>()
+
   constructor(alias: string) {
     super()
     this.alias = alias
   }
 
   async start(): Promise<void> {
+    await this.loadExtraHosts()
     await this.scan()
     this.scanTimer = setInterval(() => this.scan(), SCAN_INTERVAL_MS)
     this.healthTimer = setInterval(() => this.healthCheck(), HEALTH_INTERVAL_MS)
@@ -96,31 +113,69 @@ export class DiscoveryService extends EventEmitter {
     } catch {}
   }
 
+  private async loadExtraHosts(): Promise<void> {
+    const host = Constants.expoConfig?.hostUri?.split(':')[0]
+    if (host && isIpv4(host)) this.devHost = host
+    try {
+      const saved = JSON.parse((await AsyncStorage.getItem(MANUAL_HOSTS_KEY)) ?? '[]')
+      if (Array.isArray(saved)) saved.filter(isIpv4).forEach((ip) => this.manualHosts.add(ip))
+    } catch {
+      // storage corrupto — se ignora
+    }
+  }
+
+  private extraHosts(): string[] {
+    const hosts = new Set(this.manualHosts)
+    if (this.devHost) hosts.add(this.devHost)
+    return [...hosts]
+  }
+
+  // Agrega a mano la IP de una PC (la que muestra la app desktop en su barra superior).
+  // Devuelve true si en esa IP respondió una app LocalSend; en ese caso se recuerda.
+  async addManualHost(ip: string): Promise<boolean> {
+    if (!isIpv4(ip)) return false
+    const found = await this.probeAndTrack(ip, HEALTH_PROBE_TIMEOUT_MS)
+    if (!found) return false
+    this.manualHosts.add(ip)
+    try {
+      await AsyncStorage.setItem(MANUAL_HOSTS_KEY, JSON.stringify([...this.manualHosts]))
+    } catch {
+      // best-effort: si no se guarda, igual quedó conectada en esta sesión
+    }
+    return true
+  }
+
+  // Prueba una IP y, si hay un desktop, lo agrega/actualiza y nos registramos con él
+  private async probeAndTrack(ip: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<boolean> {
+    const device = await this.probeIp(ip, timeoutMs)
+    if (!device) return false
+    const isNew = !this.devices.has(ip)
+    this.devices.set(ip, device)
+    if (isNew) {
+      this.emit('deviceFound', device)
+      await this.registerWith(ip) // tell desktop about us
+    } else {
+      this.emit('deviceUpdated', device)
+    }
+    return true
+  }
+
   private async scan(): Promise<void> {
     if (this.scanning) return
     this.scanning = true
     try {
+      // Primero las IPs conocidas fuera del /24 (con más timeout: son pocas)
+      const extra = this.extraHosts()
+      await Promise.all(extra.map((ip) => this.probeAndTrack(ip, HEALTH_PROBE_TIMEOUT_MS)))
+
       const prefix = await this.getSubnetPrefix()
       if (!prefix) return
 
       for (let start = 1; start <= 254; start += PROBE_BATCH) {
-        const batch: Promise<void>[] = []
+        const batch: Promise<boolean>[] = []
         for (let i = start; i < start + PROBE_BATCH && i <= 254; i++) {
           const ip = `${prefix}${i}`
-          batch.push(
-            this.probeIp(ip).then(async (device) => {
-              if (!device) return
-              const isNew = !this.devices.has(ip)
-              device.lastSeen = Date.now()
-              this.devices.set(ip, device)
-              if (isNew) {
-                this.emit('deviceFound', device)
-                await this.registerWith(ip) // tell desktop about us
-              } else {
-                this.emit('deviceUpdated', device)
-              }
-            })
-          )
+          if (!extra.includes(ip)) batch.push(this.probeAndTrack(ip))
         }
         await Promise.all(batch)
       }

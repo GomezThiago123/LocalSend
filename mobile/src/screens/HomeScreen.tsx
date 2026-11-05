@@ -8,13 +8,15 @@ import {
   StatusBar,
   SafeAreaView,
   Alert,
+  TextInput,
+  ActivityIndicator,
   useColorScheme
 } from 'react-native'
 import * as DocumentPicker from 'expo-document-picker'
 import * as ImagePicker from 'expo-image-picker'
 import * as Haptics from 'expo-haptics'
 import * as Network from 'expo-network'
-import { DiscoveryService, type DiscoveredDevice } from '../services/discovery'
+import { DiscoveryService, isIpv4, type DiscoveredDevice } from '../services/discovery'
 import { TransferClient, type TransferProgress, type TransferStatus, type LinkLoss } from '../services/transfer'
 import { ReceiverService, type IncomingTransferMeta } from '../services/receiver'
 import { getOrCreateAlias } from '../services/deviceAlias'
@@ -53,6 +55,8 @@ export default function HomeScreen(): React.JSX.Element {
   const [isOnWifi, setIsOnWifi] = useState(true)
   // Aviso cuando la PC vinculada desaparece estando nosotros conectados
   const [peerNotice, setPeerNotice] = useState<string | null>(null)
+  const [manualIp, setManualIp] = useState('')
+  const [connectingIp, setConnectingIp] = useState(false)
   const [transferModal, setTransferModal] = useState(false)
   const [transferDevice, setTransferDevice] = useState<DiscoveredDevice | null>(null)
   const [transferFile, setTransferFile] = useState<SelectedFile | null>(null)
@@ -211,6 +215,30 @@ export default function HomeScreen(): React.JSX.Element {
     }
   }, [])
 
+  // Fallback cuando el escaneo automático no encuentra la PC (ej. está en otro
+  // bloque de una red grande): el usuario escribe la IP que muestra el desktop.
+  const connectManual = useCallback(async () => {
+    const ip = manualIp.trim().replace(/,/g, '.')
+    if (!ip || connectingIp) return
+    if (!isIpv4(ip)) {
+      Alert.alert('IP inválida', 'Escribí una IP como 192.168.1.10 (la que muestra la app de escritorio arriba, al lado del nombre).')
+      return
+    }
+    const discovery = discoveryRef.current
+    if (!discovery) return
+    setConnectingIp(true)
+    const found = await discovery.addManualHost(ip)
+    setConnectingIp(false)
+    if (found) {
+      setManualIp('')
+    } else {
+      Alert.alert(
+        'No se encontró la PC',
+        `No respondió ninguna app LocalSend en ${ip}. Verificá que la app de escritorio esté abierta, que la IP sea la que muestra arriba y que ambos estén en el mismo Wi-Fi.`
+      )
+    }
+  }, [manualIp, connectingIp])
+
   const pickDocument = useCallback(async () => {
     const result = await DocumentPicker.getDocumentAsync({ multiple: true })
     if (!result.canceled) {
@@ -345,6 +373,30 @@ export default function HomeScreen(): React.JSX.Element {
 
       <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false}>
         <RadarView devices={devices} onDevicePress={sendToDevice} />
+
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: t.textMuted }]}>¿No aparece tu PC? Conectá por IP</Text>
+          <View style={styles.pickerRow}>
+            <TextInput
+              style={[styles.ipInput, { backgroundColor: t.surface, borderColor: t.border, color: t.text }]}
+              value={manualIp}
+              onChangeText={setManualIp}
+              placeholder="Ej: 192.168.1.10"
+              placeholderTextColor={t.textMuted}
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="go"
+              onSubmitEditing={connectManual}
+            />
+            <TouchableOpacity
+              style={[styles.ipBtn, { backgroundColor: t.accent, opacity: connectingIp ? 0.6 : 1 }]}
+              onPress={connectManual}
+              disabled={connectingIp}
+            >
+              {connectingIp ? <ActivityIndicator color="#fff" /> : <Text style={styles.ipBtnText}>Conectar</Text>}
+            </TouchableOpacity>
+          </View>
+        </View>
 
         {/* File picker section */}
         <View style={styles.section}>
@@ -501,6 +553,27 @@ const styles = StyleSheet.create({
   pickerBtnText: {
     color: '#f1f5f9',
     fontWeight: '600',
+    fontSize: 14
+  },
+  ipInput: {
+    flex: 1,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 14,
+    fontFamily: 'monospace'
+  },
+  ipBtn: {
+    borderRadius: 12,
+    paddingHorizontal: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+    minWidth: 100
+  },
+  ipBtnText: {
+    color: '#fff',
+    fontWeight: '700',
     fontSize: 14
   },
   noFiles: {
